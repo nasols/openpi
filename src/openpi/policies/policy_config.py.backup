@@ -1,7 +1,8 @@
 import logging
 import os
 import pathlib
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
 
 import jax.numpy as jnp
 
@@ -12,8 +13,38 @@ from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
 import openpi.transforms as transforms
 
+import logging
+
 logger = logging.getLogger("openpi")
 
+
+@dataclass
+class PlannerConfig:
+    """Configuration for hierarchical task planning (HI-robot).
+    
+    HI-robot uses a reactive approach:
+    1. Generate ONE subtask at a time based on current observation
+    2. Execute until completion detected
+    3. Assess: Is subtask done? Is overall task done?
+    4. Generate next subtask or mark complete
+    5. Can replan if failures occur
+    
+    This eliminates arbitrary step limits and enables adaptive behavior.
+    """
+    enabled: bool = False
+    planner_type: str = "paligemma"  # "paligemma" or "llm"
+    
+    # For PaliGemma planner
+    next_subtask_template: Optional[str] = None
+    completion_template: Optional[str] = None
+    
+    # For external LLM planner
+    llm_model: str = "gpt-4o-mini"
+    llm_api_key: Optional[str] = None
+    
+    # Completion assessment settings
+    completion_check_frequency: int = 10  # Check completion every N steps
+    verbose: bool = True
 
 def create_trained_policy(
     train_config: _config.TrainConfig,
@@ -24,12 +55,7 @@ def create_trained_policy(
     default_prompt: str | None = None,
     norm_stats: dict[str, transforms.NormStats] | None = None,
     pytorch_device: str | None = None,
-    hierarchical_mode: bool = False,
-    subtask_template: str | None = None,
-    subtask_refresh_steps: int = 10,
-    completion_check_mode: str = "step_count",
-    completion_threshold: float = 0.75,
-    min_steps_per_subtask: int = 3,
+    planner_config: PlannerConfig | None = None,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -45,20 +71,12 @@ def create_trained_policy(
             from the checkpoint directory.
         pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda", "cuda:0").
                       If None and is_pytorch=True, will use "cuda" if available, otherwise "cpu".
-        hierarchical_mode: If True, use hierarchical planning (HI-robot) - model generates intermediate
-                         subtasks and conditions actions on them.
-        subtask_template: Template for generating subtasks. Use {prompt} for original goal.
-                        Default: "Goal: {prompt}\\n\\nNext immediate action:"
-        subtask_refresh_steps: Regenerate subtask every N steps (only used if completion_check_mode="step_count").
-        completion_check_mode: How to check subtask completion:
-            - "step_count": Refresh after fixed number of steps (simple, fast)
-            - "visual_similarity": Use CLIP/vision encoder to check if subtask looks complete (adaptive)
-        completion_threshold: For visual_similarity mode, similarity score above this triggers new subtask (0-1).
-        min_steps_per_subtask: Minimum steps before checking completion (avoid premature subtask changes).
+        planner_config: Configuration for HI-robot hierarchical planning. If provided and enabled,
+                      the policy will decompose high-level prompts into subtasks.
 
     Note:
         The function automatically detects whether the model is PyTorch-based by checking for the
-        presence of "model.safetensors" in the checkpoint directory.
+        presence of "model.safensors" in the checkpoint directory.
     """
     repack_transforms = repack_transforms or transforms.Group()
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
@@ -96,14 +114,51 @@ def create_trained_policy(
         except ImportError:
             pytorch_device = "cpu"
 
-    # Build input transforms
-    input_transforms = [
-        *repack_transforms.inputs,
+    # Build input transforms list
+    input_transforms = [*repack_transforms.inputs]
+    
+    # Add hierarchical planning transform if enabled (HI-robot)
+    if planner_config and planner_config.enabled:
+        logger.info(f"[HI-Robot] Enabling reactive hierarchical planning with {planner_config.planner_type} planner")
+        
+        # Create the appropriate planner
+        if planner_config.planner_type == "paligemma":
+            # Import here to avoid circular dependency
+            from openpi.planning import PaliGemmaPlanner
+            
+            logger.info("[HI-Robot] Using PaliGemma planner (reactive, dual-training enabled)")
+            planner = PaliGemmaPlanner(
+                policy=None,  # Will be set after policy creation
+                next_subtask_template=planner_config.next_subtask_template,
+                completion_template=planner_config.completion_template
+            )
+        elif planner_config.planner_type == "llm":
+            from openpi.planning import LLMTaskPlanner
+            logger.info(f"[HI-Robot] Using external LLM planner ({planner_config.llm_model})")
+            planner = LLMTaskPlanner(
+                model=planner_config.llm_model,
+                api_key=planner_config.llm_api_key
+            )
+        else:
+            raise ValueError(f"Unknown planner type: {planner_config.planner_type}")
+        
+        # Create hierarchical prompt transform
+        hierarchical_transform = transforms.HierarchicalPromptTransform(
+            planner=planner,
+            completion_check_frequency=planner_config.completion_check_frequency,
+            verbose=planner_config.verbose
+        )
+        
+        # Add before InjectDefaultPrompt so we can decompose the user's prompt
+        input_transforms.append(hierarchical_transform)
+    
+    # Add remaining transforms
+    input_transforms.extend([
         transforms.InjectDefaultPrompt(default_prompt),
         *data_config.data_transforms.inputs,
         transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
         *data_config.model_transforms.inputs,
-    ]
+    ])
 
     policy = _policy.Policy(
         model,
@@ -118,15 +173,16 @@ def create_trained_policy(
         metadata=train_config.policy_metadata,
         is_pytorch=is_pytorch,
         pytorch_device=pytorch_device if is_pytorch else None,
-        hierarchical_mode=hierarchical_mode,
-        subtask_template=subtask_template,
-        subtask_refresh_steps=subtask_refresh_steps,
-        completion_check_mode=completion_check_mode,
-        completion_threshold=completion_threshold,
-        min_steps_per_subtask=min_steps_per_subtask,
     )
     
-    if hierarchical_mode:
-        logger.log(level=103, msg=f"[HI-Robot] Hierarchical planning enabled (refresh every {subtask_refresh_steps} steps)")
+    # If using PaliGemma planner, update its policy reference now that policy is created
+    if planner_config and planner_config.enabled and planner_config.planner_type == "paligemma":
+        for transform in input_transforms:
+            if isinstance(transform, transforms.HierarchicalPromptTransform):
+                from openpi.planning import PaliGemmaPlanner
+                if isinstance(transform.planner, PaliGemmaPlanner):
+                    transform.planner.policy = policy
+                    logger.info("[HI-Robot] Connected PaliGemma planner to policy")
+                break
     
     return policy

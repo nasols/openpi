@@ -136,6 +136,26 @@ class ModelTransformFactory(GroupFactory):
                         _transforms.PadStatesAndActions(model_config.action_dim),
                     ],
                 )
+            case _model.ModelType.PI05_KI:
+                assert isinstance(model_config, pi0_config.Pi0Config)
+                tokenizer_cls = _tokenizer.FASTTokenizer
+                   
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        # _transforms.TokenizePrompt(
+                        #     _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                        #     discrete_state_input=model_config.discrete_state_input,
+                        # ),
+                        _transforms.TokenizeFASTInputs(
+                            tokenizer_cls(model_config.max_token_len),
+                        ),
+                        _transforms.PadStatesAndActions(model_config.action_dim),
+                    ],
+                    # No output transform needed - KI model outputs actions directly
+                    # (uses FAST tokens + action expert internally)
+                )
             case _model.ModelType.PI0_FAST:
                 tokenizer_cls = (
                     _tokenizer.FASTTokenizer
@@ -534,6 +554,10 @@ class TrainConfig:
     # data parallel between 2 groups of devices.
     fsdp_devices: int = 1
 
+    # Knowledge Insulation settings
+    knowledge_insulation_lambda: float = 1.0
+    knowledge_insulation : bool = False
+
     @property
     def assets_dirs(self) -> pathlib.Path:
         """Get the assets directory for this config."""
@@ -639,6 +663,21 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
         ),
+    ),
+    TrainConfig(
+        name="pi05_droid_ki",
+        model=pi0_config.Pi0Config(action_horizon=15, pi05=True, knowledge_insulation=True),
+        data=SimpleDataConfig(
+            assets=AssetsConfig(asset_id="droid"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[droid_policy.DroidInputs(model_type=ModelType.PI05_KI)],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        knowledge_insulation=True,
     ),
     #
     # Fine-tuning Libero configs.

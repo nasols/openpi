@@ -31,6 +31,9 @@ class Pi0Config(_model.BaseModelConfig):
     pi05: bool = False
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
+    # Knowledge insulation
+    knowledge_insulation: bool = False
+    ki_fast_loss_weight: float = 1.0
 
     def __post_init__(self):
         if self.max_token_len is None:
@@ -42,7 +45,10 @@ class Pi0Config(_model.BaseModelConfig):
     @override
     def model_type(self) -> _model.ModelType:
         if self.pi05:
+            if self.knowledge_insulation:
+                return _model.ModelType.PI05_KI
             return _model.ModelType.PI05
+        
         return _model.ModelType.PI0
 
     @override

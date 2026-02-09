@@ -13,6 +13,8 @@ import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 
+
+
 logger = logging.getLogger("openpi")
 
 
@@ -69,6 +71,9 @@ class Pi0(_model.BaseModel):
         self.pi05 = config.pi05
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
+        self.model_type = config.model_type
+        self.knowledge_insulation = config.knowledge_insulation
+        self.ki_fast_loss_weight = config.ki_fast_loss_weight
         # TODO: rewrite gemma in NNX. For now, use bridge.
         llm = nnx_bridge.ToNNX(
             _gemma.Module(
@@ -101,6 +106,64 @@ class Pi0(_model.BaseModel):
 
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
+
+    def compute_fast_loss(
+        self, 
+        prefix_out: at.Float[at.Array, "b s emb"], 
+        observation: _model.Observation
+    ) -> at.Float[at.Array, ""]:
+        """Compute FAST token prediction loss for Knowledge Insulation.
+        
+        Args:
+            prefix_out: Hidden states from VLM forward pass (batch, seq_len, embed_dim)
+                        This includes embeddings for ALL tokens: images + text
+            observation: Observation containing tokenized_prompt and token_loss_mask
+            
+        Returns:
+            Scalar loss value for FAST token prediction
+        """
+        if observation.tokenized_prompt is None or observation.token_loss_mask is None:
+            return jnp.array(0.0)
+        
+        # Create one-hot targets for next-token prediction
+        # Shift by 1: predict token[i+1] from token[i]
+        targets = jax.nn.one_hot(
+            observation.tokenized_prompt[:, 1:],  # Target: next token
+            _gemma.PALIGEMMA_VOCAB_SIZE,
+        )
+        
+        # Extract only the text token embeddings from prefix_out
+        # prefix_out contains: [image_tokens, text_tokens]
+        # We need only the text portion for language modeling
+        text_token_len = observation.tokenized_prompt.shape[1]
+        text_embeddings = prefix_out[:, -text_token_len:]  # Last text_token_len positions
+        
+        # Decode hidden states to vocabulary logits
+        # Use text_embeddings[:, :-1] because we predict next token (no prediction for last token)
+        # Manually decode: embedder.decode(x) = dot(x, embedding_table.T)
+        # Access the embedding table from NNX module
+        # In NNX, parameters are attributes of the module itself
+        embedding_table = self.PaliGemma.llm.embedder["input_embedding"]
+        logits = jnp.dot(text_embeddings[:, :-1], embedding_table.T)
+        
+        # Compute log probabilities
+        logp = jax.nn.log_softmax(logits, axis=-1)
+        
+        # Per-token perplexity: sum over vocabulary dimension
+        token_pplx = jnp.sum(targets * logp, axis=-1)  # Shape: (batch, seq_len-1)
+        
+        # Apply loss mask: only compute loss on FAST tokens
+        # Shift loss_mask by 1 to match the shifted targets
+        loss_mask = observation.token_loss_mask[:, 1:]  # Shape: (batch, seq_len-1)
+        
+        # Compute masked cross-entropy loss
+        # Negative log-likelihood, normalized by number of tokens with mask=True
+        masked_loss = -jnp.sum(token_pplx * loss_mask, axis=-1)  # Sum over sequence
+        num_tokens = jnp.clip(jnp.sum(loss_mask, axis=-1), 1)    # Avoid division by zero
+        batch_loss = masked_loss / num_tokens                     # Normalize per sample
+        
+        # Average over batch
+        return jnp.mean(batch_loss)
 
     @at.typecheck
     def embed_prefix(
@@ -148,7 +211,7 @@ class Pi0(_model.BaseModel):
         input_mask = []
         ar_mask = []
         tokens = []
-        if not self.pi05:
+        if not self.pi05:# WE DO NOT USE PI0 SO WE DO NOT EVER RUN THIS BLOCK
             # add a single state token
             state_token = self.state_proj(obs.state)[:, None, :]
             tokens.append(state_token)
@@ -200,18 +263,73 @@ class Pi0(_model.BaseModel):
         u_t = noise - actions
 
         # one big forward pass of prefix + suffix at once
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
-        input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
-        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
-        attn_mask = make_attn_mask(input_mask, ar_mask)
-        positions = jnp.cumsum(input_mask, axis=1) - 1
-        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-            [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
-        )
-        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        if self.knowledge_insulation == False:
+            prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
+            input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+            ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+            attn_mask = make_attn_mask(input_mask, ar_mask)
+            positions = jnp.cumsum(input_mask, axis=1) - 1
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
+            )
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
-        return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+            return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        
+        elif self.knowledge_insulation == True:
+            # Knowledge Insulation is enabled: Two losses are computed. 
+
+            logger.log(level=103, msg="[DEBUG] Running KI loss-computation")
+            
+            ## PART ONE! COMPUTING FAST LOSS 
+            prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+            # prefix attention mask. Separates the image+prompt+state tokens into a bi-directional block 
+            ## and the FAST tokens into an autoregressive block.
+            prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask) 
+            # Positions makes the blocks for the attention mechanism. 
+            # Meaning all tokens of lower index can be attended to. Something like that. 
+            position = jnp.cumsum(prefix_mask, axis=1) - 1 
+            
+            # Runs a forward pass through the VLM only to autoregressively predict FAST tokens. 
+            (prefix_out_FAST, _), _ = self.PaliGemma.llm(
+                [prefix_tokens, None], # Only running VLM
+                mask=prefix_attn_mask,
+                positions=position,
+            ) 
+            
+            FAST_loss = self.compute_fast_loss(prefix_out_FAST, observation) 
+            
+            # PART TWO! COMPUTING DIFFUSION LOSS
+            ## Detacging the prefix tokens to prevent gradients from flowing back to the backbone.
+            prefix_tokens_detached = jax.lax.stop_gradient(prefix_tokens)
+            # Computes the suffix embedding -> noisy action + time-embedding
+            ## Also generates attention masks. 
+            # Suffix-mask is a token mask -> Differs tokens from paddings
+            # AR-mask indicates tokens that should be autoregressively attended to or bi-directionally. 
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
+            # Input mask is just the concatenation of prefix + suffix token masks. Gives the total input mask. 
+            ## I.e. indicates which tokens are real and which are paddings.
+            input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+            # total AR mask, indicates all tokens that should get autoregressive attention and bi-directional. 
+            ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+            # A 2D attention mask for the full sequence. 
+            attn_mask = make_attn_mask(input_mask, ar_mask)
+            # Creates the position encodings for the full sequence. 
+            positions = jnp.cumsum(input_mask, axis=1) - 1
+
+            (_, suffix_out), _ = self.PaliGemma.llm(
+                [prefix_tokens_detached, suffix_tokens],
+                mask=attn_mask, 
+                positions=positions,
+                adarms_cond=[None, adarms_cond],
+            ) 
+
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            continuous_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
+            total_loss = continuous_loss + self.ki_fast_loss_weight * FAST_loss
+            return total_loss
+
 
     @override
     def sample_actions(
