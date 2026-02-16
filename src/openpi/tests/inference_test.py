@@ -16,6 +16,7 @@ from openpi.policies.droid_policy import make_droid_example
 from openpi.models.pi0 import Pi0
 import jax.numpy as jnp
 import numpy as np
+import cv2 as cv
 
 
 def print_dict_structure(d, prefix="", max_depth=5, _depth=0):
@@ -77,6 +78,10 @@ def print_observation_structure(obs, prefix=""):
 
 print("Running inference test PI05_KI model")
 
+ext_view = cv.imread("./franka_ext_view.jpg")
+prompt = "Pick up the cube and place it in the middle of the table."
+
+
 config = _config.get_config("pi05_droid_ki")
 checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
 
@@ -88,7 +93,9 @@ print("[DEBUG] Knowledge Insulation enabled? ", policy._model.knowledge_insulati
 print("[DEBUG] Model Type? ", policy._model.model_type)
 # Run inference on a dummy example.
 dummy = make_droid_example()
-gt_action = np.random.rand(15, 8).astype(np.float32)  # action_horizon=15, action_dim=32 for PI05 DROID
+dummy["observation/exterior_image_1_left"] = ext_view
+dummy["prompt"] = prompt
+gt_action = np.random.rand(15, 8).astype(np.float32)  # action_horizon=15, action_dim=8 for PI05 DROID, gets padded later
 
 print("[DEBUG] Generated dummy example: ")
 print_dict_structure(dummy)

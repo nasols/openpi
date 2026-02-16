@@ -9,9 +9,12 @@ from typing_extensions import override
 
 from openpi.models import model as _model
 from openpi.models import pi0_config
+from openpi.models import tokenizer as _tokenizer
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
+from openpi import transforms as _transforms
+
 
 
 
@@ -71,6 +74,7 @@ class Pi0(_model.BaseModel):
         self.pi05 = config.pi05
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
+        self.config = config
         self.model_type = config.model_type
         self.knowledge_insulation = config.knowledge_insulation
         self.ki_fast_loss_weight = config.ki_fast_loss_weight
@@ -94,6 +98,8 @@ class Pi0(_model.BaseModel):
         )
         img.lazy_init(next(iter(config.fake_obs().images.values())), train=False, rngs=rngs)
         self.PaliGemma = nnx.Dict(llm=llm, img=img)
+        # Create tokenizer for text generation
+        self.tokenizer = _tokenizer.PaligemmaTokenizer(max_len=config.max_token_len)
         self.action_in_proj = nnx.Linear(config.action_dim, action_expert_config.width, rngs=rngs)
         if config.pi05:
             self.time_mlp_in = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
@@ -395,3 +401,74 @@ class Pi0(_model.BaseModel):
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+
+    @at.typecheck
+    def generate_subtask(self, observation: _model.Observation, original_prompt: str, max_tokens: int = 5) -> str: 
+        """Generate subtask using autoregressive text generation.
+        
+        Args:
+            observation: Preprocessed observation with images and tokenized prompt
+            original_prompt: The original goal/prompt text
+            max_tokens: Maximum number of tokens to generate
+            
+        Returns:
+            Generated subtask text
+        """
+        
+        subtask_prompt = "You are tasked with decomposing the following goal into a sub-task. Take the overarching goal and give back a sub-task. Here is the task: \n Task: {prompt}; \n Sub-task: "
+        subtask_prompt = subtask_prompt.format(prompt=original_prompt)
+
+        # Get initial prefix embeddings (images + prompt)
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        
+        embedding_table = self.PaliGemma.llm.embedder["input_embedding"]
+        generated_tokens = []
+        
+        # Autoregressive generation loop
+        for step in range(max_tokens):
+            # Create attention mask for current sequence
+            prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+            position = jnp.cumsum(prefix_mask, axis=1) - 1
+            
+            # Forward pass through VLM
+            (prefix_out, _), _ = self.PaliGemma.llm(
+                [prefix_tokens, None],
+                mask=prefix_attn_mask,
+                positions=position,
+            )
+            
+            # Get logits for the LAST position (which predicts the next token)
+            last_embedding = prefix_out[:, -1:, :]  # Shape: (batch, 1, emb_dim)
+            logits = jnp.dot(last_embedding, embedding_table.T)  # Shape: (batch, 1, vocab_size)
+            
+            # Greedy decoding - take most likely token
+            next_token_id = jnp.argmax(logits[0, 0])  # Scalar token ID
+            logger.log(level=103, msg=f"[HI-Robot] Step {step}: Generated token ID {next_token_id}")
+            logger.log(level=103, msg=f"[HI-Robot] Step {step}: Logits {logits}, {logits.shape}")
+            # Check for EOS token or newline to stop generation
+            # if next_token_id == 1 or next_token_id == 2:  # EOS or padding
+            #     break
+                
+            generated_tokens.append(int(next_token_id))
+            
+            # Embed the new token and append to prefix for next iteration
+            next_token_embedding = self.PaliGemma.llm(
+                jnp.array([[next_token_id]]), method="embed"
+            )  # Shape: (1, 1, emb_dim)
+            
+            # Append to sequence
+            prefix_tokens = jnp.concatenate([prefix_tokens, next_token_embedding], axis=1)
+            prefix_mask = jnp.concatenate([prefix_mask, jnp.ones((1, 1), dtype=jnp.bool_)], axis=1)
+            prefix_ar_mask = jnp.concatenate([prefix_ar_mask, jnp.array([False])])  # Causal attention for generated tokens
+        
+        # Decode generated tokens to text
+        if generated_tokens:
+            subtask_text = self.tokenizer._tokenizer.decode(generated_tokens)
+        else:
+            subtask_text = ""
+        
+        logger.log(level=103, msg=f"[HI-Robot] Generated subtask text: {subtask_text}")
+        logger.log(level=103, msg=f"[HI-Robot] Generated token IDs: {generated_tokens}")
+        
+        return subtask_prompt + " " + subtask_text.strip()
+

@@ -22,6 +22,8 @@ from openpi.models import model as _model
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
+import copy
+
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 
 
@@ -97,40 +99,7 @@ class Policy(BasePolicy):
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         
-        logger.log(level=103, msg=f'[Policy] Original prompt: {obs["prompt"]}')
-        # Hierarchical planning: generate subtask if needed
-        if self._hierarchical_mode and "prompt" in obs:
-            logger.log(level=103, msg=f"[HI-Robot] Running HI-Robot pipeline!")
-            if self._original_prompt is None: # Sets this once at start of episode. 
-                self._original_prompt = obs["prompt"]
-            
-            # Check if we should generate a new subtask
-            should_regenerate = False
-            if self._current_subtask is None:
-                should_regenerate = True
-            elif self._step_count >= self._min_steps_per_subtask:
-                if self._completion_check_mode == "step_count":
-                    # Simple time-based refresh
-                    should_regenerate = (self._step_count % self._subtask_refresh_steps == 0)
-                elif self._completion_check_mode == "visual_similarity":
-                    # CLIP-based completion check
-                    is_complete = self._check_subtask_completion(obs, self._current_subtask)
-                    should_regenerate = is_complete
-            
-            if should_regenerate:
-                logger.log(level=103, msg="[HI-Robot] Generating new subtask...")
-                inputs = jax.tree.map(lambda x: x, obs)
-                passing_obs = self._input_transform(inputs)
-                passing_obs = _model.Observation.from_dict(passing_obs)  # Ensure correct format
-                self._current_subtask = self._generate_subtask(passing_obs)
-                self._step_count = 0  # Reset counter for new subtask
-                logger.log(level=103, msg=f"[HI-Robot] New subtask: {self._current_subtask}")
-            else: 
-                logger.log(level=103, msg=f"[HI-Robot] Continuing with current subtask: {self._current_subtask} (step count: {self._step_count})")
-            
-            # Replace prompt with current subtask for action generation
-            obs["prompt"] = self._current_subtask
-            self._step_count += 1
+        
 
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
@@ -154,6 +123,15 @@ class Policy(BasePolicy):
             sample_kwargs["noise"] = noise
 
         observation = _model.Observation.from_dict(inputs)
+
+        ### HIERARCHICAL PLANNING ###
+        #############################
+        prompt = obs.get("prompt", None)
+        if self._hierarchical_mode and prompt is not None:
+            _subtask = self._model.generate_subtask(observation, prompt)
+            logger.log(level=103, msg=f"[HI-Robot] Generated subtask: {_subtask}")
+
+        ############################
         start_time = time.monotonic()
         outputs = {
             "state": inputs["state"],
@@ -175,59 +153,37 @@ class Policy(BasePolicy):
     def metadata(self) -> dict[str, Any]:
         return self._metadata
     
-    def _generate_subtask(self, observation: dict) -> str:
-        """Generate next subtask using the model's text generation."""
-        # Create subtask generation prompt
-        # subtask_prompt = self._subtask_template.format(prompt=self._original_prompt)
-        
-        # # Check if model has text generation capability
-        # if hasattr(self._model, 'generate_text'):
-        #     try:
-        #         # Create observation for text generation
-        #         text_gen_inputs = {**inputs, "prompt": subtask_prompt}
-                
-        #         if self._is_pytorch_model:
-        #             # Convert to PyTorch tensors
-        #             text_gen_inputs = jax.tree.map(
-        #                 lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device),
-        #                 text_gen_inputs
-        #             )
-        #             subtask = self._model.generate_text(text_gen_inputs, max_tokens=64)
-        #         else:
-        #             # JAX version
-        #             text_gen_inputs = jax.tree.map(lambda x: jnp.asarray(x), text_gen_inputs)
-        #             self._rng, gen_rng = jax.random.split(self._rng)
-        #             subtask = self._model.generate_text(gen_rng, text_gen_inputs, max_tokens=64)
-                
-        #         return subtask.strip()
-        #     except Exception as e:
-        #         logging.warning(f"[HI-Robot] Text generation failed: {e}, using original prompt")
-        #         return self._original_prompt
-        # else:
-        #     # Model doesn't have text generation yet, use original prompt
+    # def _generate_subtask(self, observation: dict) -> str:
+    #     """Generate next subtask using the model's text generation."""
+    #     # Create subtask generation prompt
+    #     subtask_prompt = self._subtask_template.format(prompt=self._original_prompt)
 
-        #     logging.warning("[HI-Robot] Model lacks generate_text(), using original prompt")
-        #     return self._original_prompt
-
-        # Using the VLM and the sub-task prompt template, we generate the desired sub-task. 
-        prefix_tokens, prefix_mask, prefix_ar_mask = self._model.embed_prefix(observation)
-        # prefix attention mask. Separates the image+prompt+state tokens into a bi-directional block 
+    #     inputs = jax.tree.map(lambda x: x, observation)
+    #     inputs = self._input_transform(inputs)
+    #     inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
+    #     sample_rng_or_pytorch_device = self._pytorch_device
+    #     observation = _model.Observation.from_dict(inputs)
+    #     observation = _model.preprocess_observation(sample_rng_or_pytorch_device, observation, train=True)
         
-        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask) 
-        # Positions makes the blocks for the attention mechanism. 
-        # Meaning all tokens of lower index can be attended to. Something like that. 
-        position = jnp.cumsum(prefix_mask, axis=1) - 1 
+    #     # Using the VLM and the sub-task prompt template, we generate the desired sub-task. 
+    #     prefix_tokens, prefix_mask, prefix_ar_mask = self._model.embed_prefix(observation)
+    #     # prefix attention mask. Separates the image+prompt+state tokens into a bi-directional block 
         
-        # Runs a forward pass through the VLM only to autoregressively predict FAST tokens. 
-        (prefix_out, _), _ = self._model.PaliGemma.llm(
-            [prefix_tokens, None], # Only running VLM
-            mask=prefix_attn_mask,
-            positions=position,
-        ) 
+    #     prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask) 
+    #     # Positions makes the blocks for the attention mechanism. 
+    #     # Meaning all tokens of lower index can be attended to. Something like that. 
+    #     position = jnp.cumsum(prefix_mask, axis=1) - 1 
+        
+    #     # Runs a forward pass through the VLM only to autoregressively predict FAST tokens. 
+    #     (prefix_out, _), _ = self._model.PaliGemma.llm(
+    #         [prefix_tokens, None], # Only running VLM
+    #         mask=prefix_attn_mask,
+    #         positions=position,
+    #     ) 
 
-        # Decode output tokens into text. 
-        subtask = self._model.PaliGemma.tokenizer.decode(prefix_out[0, -1, :], skip_special_tokens=True)
-        return self._subtask_template.format(prompt=self._original_prompt) + " " + subtask.strip()
+    #     # Decode output tokens into text. 
+    #     subtask = self._model.PaliGemma.tokenizer.decode(prefix_out[0, -1, :], skip_special_tokens=True)
+    #     return self._subtask_template.format(prompt=self._original_prompt) + " " + subtask.strip()
 
 
 
