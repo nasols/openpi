@@ -254,7 +254,7 @@ class TokenizePrompt(DataTransformFn):
     discrete_state_input: bool = False
 
     def __call__(self, data: DataDict) -> DataDict:
-        logger.log(level=103, msg="[DEBUG] Tokenizing prompt ...")
+        #logger.log(level=103, msg="[DEBUG] Tokenizing prompt ...")
         if (prompt := data.pop("prompt", None)) is None:
             raise ValueError("Prompt is required")
 

@@ -457,7 +457,7 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
                 _transforms.RepackTransform(
                     {
                         "observation/exterior_image_1_left": "exterior_image_1_left",
-                        "observation/exterior_image_2_left": "exterior_image_2_left",
+                        #"observation/exterior_image_2_left": "exterior_image_2_left",
                         "observation/wrist_image_left": "wrist_image_left",
                         "observation/joint_position": "joint_position",
                         "observation/gripper_position": "gripper_position",
@@ -663,21 +663,6 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
         ),
-    ),
-    TrainConfig(
-        name="pi05_droid_ki",
-        model=pi0_config.Pi0Config(action_horizon=15, pi05=True, knowledge_insulation=True),
-        data=SimpleDataConfig(
-            assets=AssetsConfig(asset_id="droid"),
-            data_transforms=lambda model: _transforms.Group(
-                inputs=[droid_policy.DroidInputs(model_type=ModelType.PI05_KI)],
-                outputs=[droid_policy.DroidOutputs()],
-            ),
-            base_config=DataConfig(
-                prompt_from_task=True,
-            ),
-        ),
-        knowledge_insulation=True,
     ),
     #
     # Fine-tuning Libero configs.
@@ -943,7 +928,7 @@ _CONFIGS = [
         ),
         data=LeRobotDROIDDataConfig(
             # Replace with your custom DROID LeRobot dataset repo id.
-            repo_id="your_hf_username/my_droid_dataset",
+            repo_id="lerobot_pickupcube",
             base_config=DataConfig(prompt_from_task=True),
             assets=AssetsConfig(
                 # Important: reuse the original DROID norm stats during fine-tuning!
@@ -954,6 +939,37 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
         num_train_steps=20_000,
         batch_size=32,
+    ),
+    TrainConfig(
+        name="pi05_droid_ki",
+        model=pi0_config.Pi0Config(
+            pi05=True, 
+            action_dim=32,
+            action_horizon=15, 
+            knowledge_insulation=False),
+        # data=SimpleDataConfig(
+        #     assets=AssetsConfig(asset_id="droid"),
+        #     data_transforms=lambda model: _transforms.Group(
+        #         inputs=[droid_policy.DroidInputs(model_type=ModelType.PI05_KI)],
+        #         outputs=[droid_policy.DroidOutputs()],
+        #     ),
+        #     base_config=DataConfig(
+        #         prompt_from_task=True,
+        #     ),
+        # ),
+        data=LeRobotDROIDDataConfig(
+            repo_id="lerobot_pickupcube",
+            base_config=DataConfig(prompt_from_task=True), 
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                asset_id="droid"
+            )
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        num_train_steps=20_000,
+        batch_size=32,
+
+        knowledge_insulation=False,
     ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
