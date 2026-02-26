@@ -5,6 +5,7 @@ import flax.nnx as nnx
 import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
+import optax
 from typing_extensions import override
 
 from openpi.models import model as _model
@@ -121,6 +122,8 @@ class Pi0(_model.BaseModel):
     ) -> at.Float[at.Array, ""]:
         """Compute FAST token prediction loss for Knowledge Insulation.
         
+        Memory-optimized version that avoids creating large one-hot tensors.
+        
         Args:
             prefix_out: Hidden states from VLM forward pass (batch, seq_len, embed_dim)
                         This includes embeddings for ALL tokens: images + text
@@ -132,42 +135,39 @@ class Pi0(_model.BaseModel):
         if observation.tokenized_prompt is None or observation.token_loss_mask is None:
             return jnp.array(0.0)
         
-        # Create one-hot targets for next-token prediction
-        # Shift by 1: predict token[i+1] from token[i]
-        targets = jax.nn.one_hot(
-            observation.tokenized_prompt[:, 1:],  # Target: next token
-            _gemma.PALIGEMMA_VOCAB_SIZE,
-        )
+        # Extract target tokens for next-token prediction (shift by 1)
+        target_tokens = observation.tokenized_prompt[:, 1:]  # Shape: (batch, seq_len-1)
+        loss_mask = observation.token_loss_mask[:, 1:]  # Shape: (batch, seq_len-1)
         
         # Extract only the text token embeddings from prefix_out
         # prefix_out contains: [image_tokens, text_tokens]
-        # We need only the text portion for language modeling
         text_token_len = observation.tokenized_prompt.shape[1]
         text_embeddings = prefix_out[:, -text_token_len:]  # Last text_token_len positions
         
         # Decode hidden states to vocabulary logits
-        # Use text_embeddings[:, :-1] because we predict next token (no prediction for last token)
-        # Manually decode: embedder.decode(x) = dot(x, embedding_table.T)
-        # Access the embedding table from NNX module
-        # In NNX, parameters are attributes of the module itself
+        # Use text_embeddings[:, :-1] to predict next token (no prediction for last token)
+        # Memory-efficient: Use einsum with optimal contraction order
         embedding_table = self.PaliGemma.llm.embedder["input_embedding"]
-        logits = jnp.dot(text_embeddings[:, :-1], embedding_table.T)
+        logits = jnp.einsum(
+            'bse,ve->bsv', 
+            text_embeddings[:, :-1], 
+            embedding_table,
+            optimize='optimal'
+        )  # Shape: (batch, seq_len-1, vocab_size)
         
-        # Compute log probabilities
-        logp = jax.nn.log_softmax(logits, axis=-1)
-        
-        # Per-token perplexity: sum over vocabulary dimension
-        token_pplx = jnp.sum(targets * logp, axis=-1)  # Shape: (batch, seq_len-1)
+        # Use optax's efficient cross-entropy with integer labels
+        # This avoids creating massive one-hot tensors (batch × seq_len × 256K vocab)
+        per_token_loss = optax.softmax_cross_entropy_with_integer_labels(
+            logits, target_tokens
+        )  # Shape: (batch, seq_len-1)
         
         # Apply loss mask: only compute loss on FAST tokens
-        # Shift loss_mask by 1 to match the shifted targets
-        loss_mask = observation.token_loss_mask[:, 1:]  # Shape: (batch, seq_len-1)
+        masked_loss = per_token_loss * loss_mask
         
-        # Compute masked cross-entropy loss
-        # Negative log-likelihood, normalized by number of tokens with mask=True
-        masked_loss = -jnp.sum(token_pplx * loss_mask, axis=-1)  # Sum over sequence
-        num_tokens = jnp.clip(jnp.sum(loss_mask, axis=-1), 1)    # Avoid division by zero
-        batch_loss = masked_loss / num_tokens                     # Normalize per sample
+        # Normalize by number of masked tokens per sample
+        sum_masked_loss = jnp.sum(masked_loss, axis=-1)  # Sum over sequence
+        num_tokens = jnp.clip(jnp.sum(loss_mask, axis=-1), 1)  # Avoid division by zero
+        batch_loss = sum_masked_loss / num_tokens  # Normalize per sample
         
         # Average over batch
         return jnp.mean(batch_loss)
@@ -285,55 +285,63 @@ class Pi0(_model.BaseModel):
             return jnp.mean(jnp.square(v_t - u_t), axis=-1)
         
         elif self.knowledge_insulation == True:
-            # Knowledge Insulation is enabled: Two losses are computed. 
-
-            logger.log(level=103, msg="[DEBUG] Running KI loss-computation")
+            # Knowledge Insulation: Memory-optimized implementation with KV cache reuse
+            # Two losses computed from two forward passes, but VLM computation reused via cache
             
-            ## PART ONE! COMPUTING FAST LOSS 
+            logger.log(level=103, msg="[DEBUG] Running KI loss-computation (memory-optimized)")
+            
+            ## PART ONE: FAST LOSS - Compute VLM forward and cache results
             prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
             # prefix attention mask. Separates the image+prompt+state tokens into a bi-directional block 
             ## and the FAST tokens into an autoregressive block.
             prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask) 
-            # Positions makes the blocks for the attention mechanism. 
-            # Meaning all tokens of lower index can be attended to. Something like that. 
-            position = jnp.cumsum(prefix_mask, axis=1) - 1 
+            prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1 
             
-            # Runs a forward pass through the VLM only to autoregressively predict FAST tokens. 
-            (prefix_out_FAST, _), _ = self.PaliGemma.llm(
-                [prefix_tokens, None], # Only running VLM
+            # Forward pass through VLM: get outputs AND KV cache
+            # Gradients will flow through prefix_tokens for FAST loss
+            (prefix_out_FAST, _), kv_cache = self.PaliGemma.llm(
+                [prefix_tokens, None],  # Only VLM expert
                 mask=prefix_attn_mask,
-                positions=position,
+                positions=prefix_positions,
             ) 
             
+            # Compute FAST loss (gradients flow to VLM parameters)
             FAST_loss = self.compute_fast_loss(prefix_out_FAST, observation) 
             
-            # PART TWO! COMPUTING DIFFUSION LOSS
-            ## Detacging the prefix tokens to prevent gradients from flowing back to the backbone.
-            prefix_tokens_detached = jax.lax.stop_gradient(prefix_tokens)
-            # Computes the suffix embedding -> noisy action + time-embedding
-            ## Also generates attention masks. 
-            # Suffix-mask is a token mask -> Differs tokens from paddings
-            # AR-mask indicates tokens that should be autoregressively attended to or bi-directionally. 
+            ## PART TWO: ACTION LOSS - Reuse KV cache to avoid recomputing VLM
+            # Stop gradients on KV cache to prevent action loss from updating VLM
+            kv_cache_detached = jax.tree.map(jax.lax.stop_gradient, kv_cache)
+            
+            # Compute suffix tokens (noisy actions + time embedding)
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
-            # Input mask is just the concatenation of prefix + suffix token masks. Gives the total input mask. 
-            ## I.e. indicates which tokens are real and which are paddings.
-            input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
-            # total AR mask, indicates all tokens that should get autoregressive attention and bi-directional. 
-            ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
-            # A 2D attention mask for the full sequence. 
-            attn_mask = make_attn_mask(input_mask, ar_mask)
-            # Creates the position encodings for the full sequence. 
-            positions = jnp.cumsum(input_mask, axis=1) - 1
-
+            
+            # Create attention masks for suffix tokens
+            # suffix_attn_mask: how suffix tokens attend to each other
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            # prefix_attn_mask: how suffix tokens can attend to cached prefix
+            prefix_attn_mask_for_suffix = einops.repeat(
+                prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1]
+            )
+            # Combined mask: suffix can attend to [cached_prefix, suffix]
+            full_attn_mask = jnp.concatenate([prefix_attn_mask_for_suffix, suffix_attn_mask], axis=-1)
+            
+            # Positions for suffix tokens (continue from where prefix ended)
+            suffix_positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+            
+            # Forward pass with cached KV: only compute action expert
+            # Pass [None, suffix_tokens] to skip VLM recomputation
             (_, suffix_out), _ = self.PaliGemma.llm(
-                [prefix_tokens_detached, suffix_tokens],
-                mask=attn_mask, 
-                positions=positions,
+                [None, suffix_tokens],  # Skip VLM, use cached KV
+                mask=full_attn_mask, 
+                positions=suffix_positions,
+                kv_cache=kv_cache_detached,  # Reuse stopped-gradient cache
                 adarms_cond=[None, adarms_cond],
             ) 
 
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
             continuous_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
+            
+            # Combined loss: both components contribute to final loss
             total_loss = continuous_loss + self.ki_fast_loss_weight * FAST_loss
             return total_loss
 

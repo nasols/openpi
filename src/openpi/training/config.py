@@ -937,8 +937,12 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
-        num_train_steps=20_000,
+        num_train_steps=2000 + 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
+        save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
+        log_interval=100,
+        # keep_period=2000,
         batch_size=32,
+        fsdp_devices=2,
     ),
     TrainConfig(
         name="pi05_droid_ki",
@@ -946,17 +950,7 @@ _CONFIGS = [
             pi05=True, 
             action_dim=32,
             action_horizon=15, 
-            knowledge_insulation=False),
-        # data=SimpleDataConfig(
-        #     assets=AssetsConfig(asset_id="droid"),
-        #     data_transforms=lambda model: _transforms.Group(
-        #         inputs=[droid_policy.DroidInputs(model_type=ModelType.PI05_KI)],
-        #         outputs=[droid_policy.DroidOutputs()],
-        #     ),
-        #     base_config=DataConfig(
-        #         prompt_from_task=True,
-        #     ),
-        # ),
+            knowledge_insulation=True),
         data=LeRobotDROIDDataConfig(
             repo_id="lerobot_pickupcube",
             base_config=DataConfig(prompt_from_task=True), 
@@ -966,10 +960,14 @@ _CONFIGS = [
             )
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
-        num_train_steps=20_000,
+        num_train_steps=2000 + 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
+        save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
+        log_interval=100,
+        # keep_period=2000,
         batch_size=32,
+        fsdp_devices=2,
 
-        knowledge_insulation=False,
+        knowledge_insulation=True,
     ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
@@ -998,6 +996,18 @@ _CONFIGS = [
         exp_name="debug",
         num_train_steps=10,
         wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="debug_ki",
+        data=FakeDataConfig(),
+        batch_size=2,
+        model=pi0_config.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy", knowledge_insulation=True),
+        save_interval=100,
+        overwrite=True,
+        exp_name="debug",
+        num_train_steps=10,
+        wandb_enabled=False,
+        knowledge_insulation=True,
     ),
     TrainConfig(
         name="debug_restore",
