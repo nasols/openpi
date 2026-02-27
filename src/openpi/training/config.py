@@ -574,7 +574,7 @@ class TrainConfig:
     def trainable_filter(self) -> nnx.filterlib.Filter:
         """Get the filter for the trainable parameters."""
         return nnx.All(nnx.Param, nnx.Not(self.freeze_filter))
-
+    
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
@@ -924,7 +924,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             action_dim=32,  # pi05 is trained with 32-dim actions
-            action_horizon=16,
+            action_horizon=15,
         ),
         data=LeRobotDROIDDataConfig(
             # Replace with your custom DROID LeRobot dataset repo id.
@@ -1053,3 +1053,33 @@ def get_config(config_name: str) -> TrainConfig:
         raise ValueError(f"Config '{config_name}' not found.{closest_str}")
 
     return _CONFIGS_DICT[config_name]
+
+@dataclasses.dataclass(frozen=True)
+class PolicyConfig: # Can be expanded with KI and HI pipelines 
+    config_name : str
+    exp_name: str = None
+
+    @property
+    def get_checkpoint_dir(self): 
+        if self.exp_name is not None: 
+            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/").resolve()
+        else: 
+            return f"gs://openpi-assets/checkpoints/{self.config_name}"
+    @property
+    def get_assets_dir(self): 
+        return pathlib.Path(f"")
+
+    @property
+    def get_training_config(self): 
+        return get_config(self.config_name)
+
+def get_policy_config(config_name:str, exp_name:str|None=None) : 
+
+    pc = PolicyConfig(
+        config_name=config_name, 
+        exp_name=exp_name)
+
+    return pc
+
+
+

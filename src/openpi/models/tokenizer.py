@@ -16,8 +16,8 @@ class PaligemmaTokenizer:
     def __init__(self, max_len: int = 48):
         self._max_len = max_len
 
-        print("\n[DEBUG] PaligemmaTokenizer.__init__ called. PID:", os.getpid())
-        traceback.print_stack(limit=30)
+        # print("\n[DEBUG] PaligemmaTokenizer.__init__ called. PID:", os.getpid())
+        # traceback.print_stack(limit=30)
 
         path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
         with path.open("rb") as f:
