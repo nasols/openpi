@@ -69,18 +69,19 @@ def posemb_sincos(
     return jnp.concatenate([jnp.sin(sinusoid_input), jnp.cos(sinusoid_input)], axis=-1)
 
 
-class Pi0(_model.BaseModel):
+class Pi05(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
-        self.pi05 = config.pi05
+        self.pi05 = True
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         self.config = config
         self.model_type = config.model_type
         self.knowledge_insulation = config.knowledge_insulation
         self.ki_fast_loss_weight = config.ki_fast_loss_weight
+        self.hierarcical = False 
         # TODO: rewrite gemma in NNX. For now, use bridge.
-        llm = nnx_bridge.ToNNX(
+        llm = nnx_bridge.ToNNX( # Init PaliGemma model
             _gemma.Module(
                 configs=[paligemma_config, action_expert_config],
                 embed_dtype=config.dtype,
@@ -102,14 +103,10 @@ class Pi0(_model.BaseModel):
         # Create tokenizer for text generation
         #[TODO Gets in the way of running training, belongs to HI-Robot implementation]
         #self.tokenizer = _tokenizer.PaligemmaTokenizer(max_len=config.max_token_len)
+
         self.action_in_proj = nnx.Linear(config.action_dim, action_expert_config.width, rngs=rngs)
-        if config.pi05:
-            self.time_mlp_in = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
-            self.time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
-        else:
-            self.state_proj = nnx.Linear(config.action_dim, action_expert_config.width, rngs=rngs)
-            self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
-            self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
+        self.time_mlp_in = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
+        self.time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
 
         # This attribute gets automatically set by model.train() and model.eval().
@@ -136,7 +133,9 @@ class Pi0(_model.BaseModel):
             return jnp.array(0.0)
         
         # Extract target tokens for next-token prediction (shift by 1)
+        ## [1, 2, 3, 4, 5] -> [2, 3, 4, 5]
         target_tokens = observation.tokenized_prompt[:, 1:]  # Shape: (batch, seq_len-1)
+        
         loss_mask = observation.token_loss_mask[:, 1:]  # Shape: (batch, seq_len-1)
         
         # Extract only the text token embeddings from prefix_out
@@ -155,8 +154,7 @@ class Pi0(_model.BaseModel):
             optimize='optimal'
         )  # Shape: (batch, seq_len-1, vocab_size)
         
-        # Use optax's efficient cross-entropy with integer labels
-        # This avoids creating massive one-hot tensors (batch × seq_len × 256K vocab)
+
         per_token_loss = optax.softmax_cross_entropy_with_integer_labels(
             logits, target_tokens
         )  # Shape: (batch, seq_len-1)
@@ -218,34 +216,19 @@ class Pi0(_model.BaseModel):
         input_mask = []
         ar_mask = []
         tokens = []
-        if not self.pi05:# WE DO NOT USE PI0 SO WE DO NOT EVER RUN THIS BLOCK
-            # add a single state token
-            state_token = self.state_proj(obs.state)[:, None, :]
-            tokens.append(state_token)
-            input_mask.append(jnp.ones((obs.state.shape[0], 1), dtype=jnp.bool_))
-            # image/language inputs do not attend to state or actions
-            ar_mask += [True]
-
+        
         action_tokens = self.action_in_proj(noisy_actions)
         # embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
         time_emb = posemb_sincos(timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0)
-        if self.pi05:
-            # time MLP (for adaRMS)
-            time_emb = self.time_mlp_in(time_emb)
-            time_emb = nnx.swish(time_emb)
-            time_emb = self.time_mlp_out(time_emb)
-            time_emb = nnx.swish(time_emb)
-            action_expert_tokens = action_tokens
-            adarms_cond = time_emb
-        else:
-            # mix timestep + action information using an MLP (no adaRMS)
-            time_tokens = einops.repeat(time_emb, "b emb -> b s emb", s=self.action_horizon)
-            action_time_tokens = jnp.concatenate([action_tokens, time_tokens], axis=-1)
-            action_time_tokens = self.action_time_mlp_in(action_time_tokens)
-            action_time_tokens = nnx.swish(action_time_tokens)
-            action_time_tokens = self.action_time_mlp_out(action_time_tokens)
-            action_expert_tokens = action_time_tokens
-            adarms_cond = None
+       
+        # time MLP (for adaRMS)
+        time_emb = self.time_mlp_in(time_emb)
+        time_emb = nnx.swish(time_emb)
+        time_emb = self.time_mlp_out(time_emb)
+        time_emb = nnx.swish(time_emb)
+        action_expert_tokens = action_tokens
+        adarms_cond = time_emb
+       
         tokens.append(action_expert_tokens)
         input_mask.append(jnp.ones(action_expert_tokens.shape[:2], dtype=jnp.bool_))
         # image/language/state inputs do not attend to action tokens
@@ -254,6 +237,19 @@ class Pi0(_model.BaseModel):
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
+    
+    @override
+    def conpute_loss_ki(
+        self, rng:at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train:bool=False
+    ) -> at.Float[at.Array, "*b ah"]: 
+        
+        preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
+        observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
+        print(f"Action shape -> {actions.shape}")
+        batch_shape = actions.shape[:-2] # Actions typically shape [1, 15, 32]
+
+
+
 
     @override
     def compute_loss(
@@ -293,7 +289,7 @@ class Pi0(_model.BaseModel):
             #############################################################################
             ######## PART ONE: FAST LOSS - Compute VLM forward and cache results ########
             #############################################################################
-
+            
             prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
             # prefix attention mask. Separates the image+prompt+state tokens into a bi-directional block 
             ## and the FAST tokens into an autoregressive block.
@@ -310,8 +306,6 @@ class Pi0(_model.BaseModel):
             
             # Compute FAST loss (gradients flow to VLM parameters)
             FAST_loss = self.compute_fast_loss(prefix_out_FAST, observation) 
-
-            
 
             #############################################################################
             ###### PART TWO: ACTION LOSS - Reuse KV cache to avoid recomputing VLM ######
@@ -419,90 +413,77 @@ class Pi0(_model.BaseModel):
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
 
-    @at.typecheck
-    def generate_subtask(
-        self, 
-        rng: at.KeyArrayLike,
-        observation: _model.Observation, 
-        original_prompt: str, 
-        max_tokens: int = 20,
-        temperature: float = 0.7,
-    ) -> str: 
-        """Generate subtask using VLM autoregressive text generation.
+    # [TODO] Current implementation runs an error due to the tokenizer being instansiated twice, once in data transforms pipeline and a second time in the Pi0 model instance. 
+    # JAX only accepts one instance so either find a workaround using the data pipeline tokenizer or something else to be able to run HI-Robot
+    # This todo is only affecting the HI-Robot part of the pipeline. Maybe not even crucial for training. 
+
+    # @at.typecheck
+    # def generate_subtask(self, observation: _model.Observation, original_prompt: str, max_tokens: int = 5) -> str: 
+    #     """Generate subtask using autoregressive text generation.
         
-        This method passes the observation through the VLM to decompose the 
-        high-level task into a more specific sub-task. It uses greedy decoding
-        to generate tokens autoregressively.
+    #     Args:
+    #         observation: Preprocessed observation with images and tokenized prompt
+    #         original_prompt: The original goal/prompt text
+    #         max_tokens: Maximum number of tokens to generate
+            
+    #     Returns:
+    #         Generated subtask text
+    #     """
         
-        Args:
-            rng: Random key for sampling (if using temperature > 0)
-            observation: Preprocessed observation with images and tokenized prompt
-            original_prompt: The original high-level goal/prompt text
-            max_tokens: Maximum number of tokens to generate for the subtask
-            temperature: Sampling temperature (0 = greedy, >0 = stochastic)
-            
-        Returns:
-            Generated subtask text (token IDs as they need external decoding)
-        """
+    #     subtask_prompt = "You are tasked with decomposing the following goal into a sub-task. Take the overarching goal and give back a sub-task. Here is the task: \n Task: {prompt}; \n Sub-task: "
+    #     subtask_prompt = subtask_prompt.format(prompt=original_prompt)
+
+    #     # Get initial prefix embeddings (images + prompt)
+    #     prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         
-        logger.log(level=103, msg=f"[HI-Robot] Generating subtask for prompt: {original_prompt}")
+    #     embedding_table = self.PaliGemma.llm.embedder["input_embedding"]
+    #     generated_tokens = []
         
-        # Get initial prefix embeddings (images + decomposition prompt)
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        
-        # Extract embedding table from VLM for decoding logits to tokens
-        embedding_table = self.PaliGemma.llm.embedder["input_embedding"]
-        generated_token_ids = []
-        
-        # Autoregressive generation loop - iteratively predict next token
-        for step in range(max_tokens):
-            # Create attention mask for current sequence
-            prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
-            positions = jnp.cumsum(prefix_mask, axis=1) - 1
+    #     # Autoregressive generation loop
+    #     for step in range(max_tokens):
+    #         # Create attention mask for current sequence
+    #         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+    #         position = jnp.cumsum(prefix_mask, axis=1) - 1
             
-            # Forward pass through VLM (only vision-language expert, no action expert)
-            (prefix_out, _), _ = self.PaliGemma.llm(
-                [prefix_tokens, None],  # None for action expert
-                mask=prefix_attn_mask,
-                positions=positions,
-            )
+    #         # Forward pass through VLM
+    #         (prefix_out, _), _ = self.PaliGemma.llm(
+    #             [prefix_tokens, None],
+    #             mask=prefix_attn_mask,
+    #             positions=position,
+    #         )
             
-            # Decode last hidden state to vocabulary logits
-            last_embedding = prefix_out[:, -1:, :]  # Shape: (batch, 1, emb_dim)
-            logits = jnp.einsum('bte,ve->btv', last_embedding, embedding_table)  # (batch, 1, vocab_size)
+    #         # Get logits for the LAST position (which predicts the next token)
+    #         last_embedding = prefix_out[:, -1:, :]  # Shape: (batch, 1, emb_dim)
+    #         logits = jnp.dot(last_embedding, embedding_table.T)  # Shape: (batch, 1, vocab_size)
             
-            # Sample or greedily select next token
-            if temperature > 0:
-                rng, sample_rng = jax.random.split(rng)
-                next_token_id = jax.random.categorical(
-                    sample_rng, logits[0, 0] / temperature
-                )
-            else:
-                # Greedy decoding
-                next_token_id = jnp.argmax(logits[0, 0])
-            
-            next_token_id = int(next_token_id)
-            
-            # Check for EOS token (1) or newline (108) to stop generation early
-            if next_token_id == 1:
-                logger.log(level=103, msg=f"[HI-Robot] EOS token reached at step {step}")
-                break
+    #         # Greedy decoding - take most likely token
+    #         next_token_id = jnp.argmax(logits[0, 0])  # Scalar token ID
+    #         logger.log(level=103, msg=f"[HI-Robot] Step {step}: Generated token ID {next_token_id}")
+    #         logger.log(level=103, msg=f"[HI-Robot] Step {step}: Logits {logits}, {logits.shape}")
+    #         # Check for EOS token or newline to stop generation
+    #         # if next_token_id == 1 or next_token_id == 2:  # EOS or padding
+    #         #     break
                 
-            generated_token_ids.append(next_token_id)
-            logger.log(level=103, msg=f"[HI-Robot] Step {step}: Generated token ID {next_token_id}")
+    #         generated_tokens.append(int(next_token_id))
             
-            # Embed the new token and append to sequence for next iteration
-            next_token_embedding = self.PaliGemma.llm(
-                jnp.array([[next_token_id]]), method="embed"
-            )  # Shape: (1, 1, emb_dim)
+    #         # Embed the new token and append to prefix for next iteration
+    #         next_token_embedding = self.PaliGemma.llm(
+    #             jnp.array([[next_token_id]]), method="embed"
+    #         )  # Shape: (1, 1, emb_dim)
             
-            # Extend the sequence
-            prefix_tokens = jnp.concatenate([prefix_tokens, next_token_embedding], axis=1)
-            prefix_mask = jnp.concatenate([prefix_mask, jnp.ones((1, 1), dtype=jnp.bool_)], axis=1)
-            prefix_ar_mask = jnp.concatenate([prefix_ar_mask, jnp.array([False])])  # Causal for generated
+    #         # Append to sequence
+    #         prefix_tokens = jnp.concatenate([prefix_tokens, next_token_embedding], axis=1)
+    #         prefix_mask = jnp.concatenate([prefix_mask, jnp.ones((1, 1), dtype=jnp.bool_)], axis=1)
+    #         prefix_ar_mask = jnp.concatenate([prefix_ar_mask, jnp.array([False])])  # Causal attention for generated tokens
         
-        logger.log(level=103, msg=f"[HI-Robot] Generated token IDs: {generated_token_ids}")
+    #     # Decode generated tokens to text
+    #     if generated_tokens:
+    #         subtask_text = self.tokenizer._tokenizer.decode(generated_tokens)
+    #     else:
+    #         subtask_text = ""
         
-        # Return token IDs - decoding happens externally in policy layer with its tokenizer
-        return generated_token_ids
+    #     logger.log(level=103, msg=f"[HI-Robot] Generated subtask text: {subtask_text}")
+    #     logger.log(level=103, msg=f"[HI-Robot] Generated token IDs: {generated_tokens}")
+        
+    #     return subtask_prompt + " " + subtask_text.strip()
 

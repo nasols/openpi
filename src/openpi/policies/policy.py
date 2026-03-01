@@ -19,6 +19,7 @@ from typing_extensions import override
 
 from openpi import transforms as _transforms
 from openpi.models import model as _model
+from openpi.models import tokenizer as _tokenizer
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
@@ -85,6 +86,15 @@ class Policy(BasePolicy):
         self._current_subtask = None
         self._original_prompt = None
         self._step_count = 0
+        
+        # Create tokenizer for hierarchical mode (decoding subtasks)
+        if self._hierarchical_mode:
+            try:
+                self._tokenizer = _tokenizer.PaligemmaTokenizer(max_len=model.max_token_len)
+                logger.log(level=103, msg="[HI-Robot] Tokenizer initialized for subtask decoding")
+            except Exception as e:
+                logger.warning(f"[HI-Robot] Failed to initialize tokenizer: {e}")
+                self._tokenizer = None
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -128,8 +138,72 @@ class Policy(BasePolicy):
         #############################
         prompt = obs.get("prompt", None)
         if self._hierarchical_mode and prompt is not None:
-            _subtask = self._model.generate_subtask(observation, prompt)
-            logger.log(level=103, msg=f"[HI-Robot] Generated subtask: {_subtask}")
+            # Check if we need to generate a new subtask
+            should_generate_new_subtask = False
+            
+            if self._current_subtask is None:
+                # First call - generate initial subtask
+                should_generate_new_subtask = True
+                self._original_prompt = prompt
+                logger.log(level=103, msg=f"[HI-Robot] Initial subtask generation for: {prompt}")
+            elif self._completion_check_mode == "step_count":
+                # Step-count based: generate new subtask every N steps
+                if self._step_count >= self._subtask_refresh_steps:
+                    should_generate_new_subtask = True
+                    self._step_count = 0
+                    logger.log(level=103, msg=f"[HI-Robot] Step count threshold reached, generating new subtask")
+            # TODO: Implement visual_similarity mode when CLIP encoder is available
+            
+            if should_generate_new_subtask:
+                # Generate decomposition prompt
+                decomposition_prompt = self._subtask_template.format(prompt=self._original_prompt)
+                
+                # Tokenize the decomposition prompt
+                if self._tokenizer is not None:
+                    tokenized = self._tokenizer.encode(decomposition_prompt)
+                    # Update observation with tokenized decomposition prompt
+                    observation = _model.Observation(
+                        images=observation.images,
+                        image_masks=observation.image_masks,
+                        state=observation.state,
+                        tokenized_prompt=jnp.array([tokenized["input_ids"]]),
+                        tokenized_prompt_mask=jnp.array([tokenized["attention_mask"]]),
+                        token_ar_mask=observation.token_ar_mask,
+                        token_loss_mask=observation.token_loss_mask,
+                    )
+                    
+                    # Generate subtask token IDs using VLM
+                    if not self._is_pytorch_model:
+                        self._rng, gen_rng = jax.random.split(self._rng)
+                        token_ids = self._model.generate_subtask(
+                            gen_rng, observation, self._original_prompt, max_tokens=20
+                        )
+                    else:
+                        # PyTorch version (if implemented)
+                        token_ids = self._model.generate_subtask(
+                            None, observation, self._original_prompt, max_tokens=20
+                        )
+                    
+                    # Decode token IDs to text
+                    subtask_text = self._tokenizer.decode(token_ids)
+                    self._current_subtask = decomposition_prompt + " " + subtask_text.strip()
+                    logger.log(level=103, msg=f"[HI-Robot] Generated subtask: {self._current_subtask}")
+                else:
+                    logger.warning("[HI-Robot] Tokenizer not available, using original prompt")
+                    self._current_subtask = prompt
+            
+            self._step_count += 1
+            
+            # Replace prompt with current subtask for action generation
+            if self._current_subtask is not None:
+                inputs["prompt"] = self._current_subtask
+                # Re-apply transforms with the new subtask prompt
+                inputs = self._input_transform(inputs)
+                if not self._is_pytorch_model:
+                    inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+                else:
+                    inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
+                observation = _model.Observation.from_dict(inputs)
 
         ############################
         start_time = time.monotonic()
