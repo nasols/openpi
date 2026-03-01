@@ -245,10 +245,32 @@ class Pi05(_model.BaseModel):
         
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
-        print(f"Action shape -> {actions.shape}")
         batch_shape = actions.shape[:-2] # Actions typically shape [1, 15, 32]
+        noise = jax.random.normal(noise_rng, actions.shape) # <-- See if we can start from a previous action, not totally random
+        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001 # Sample time from Beta distribution, shape [1]
+        time_expanded = time[..., None, None] # Expand to [1, 1, 1] for broadcasting
+        x_t = time_expanded * noise + (1 - time_expanded) * actions # Diffuse the actions based on time
+        ## x_t = [time, time, time] * [1, 15, 32] + [1-time, 1-time, 1-time] * [1, 15, 32] -> [1, 15, 32]
+        ## At t=0, x_t is just the original actions. At t=1, x_t is pure noise. In between, it's a mix.
+        u_t = noise - actions # The "velocity" we want to predict: how to denoise x_t back to actions
 
+        #############################################################################
+        ######## PART ONE: FAST LOSS - Compute VLM forward and cache results ########
+        #############################################################################
+        
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        ## Combines the prefix mask (true for tokens that are part of the input, false else.)
+        ### and the prefix autoregressive mask (indicates which tokens can attent to which.)
+        prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1 # Position indices for prefix tokens, used for relative positional embeddings
 
+        # Forward pass through VLM 
+        (prefix_out_FAST, _), kv_cache = self.PaliGemma.llm(
+                [prefix_tokens, None],  # Only VLM expert
+                mask=prefix_attn_mask,
+                positions=prefix_positions,
+        )   
+    
 
 
     @override

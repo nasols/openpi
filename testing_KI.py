@@ -98,7 +98,6 @@ if __name__ == "__main__":
     )
     observation = _model.Observation.from_dict(inputs)
     print(f"Final observation passed to model \n")
-    print_dict_shapes(observation.to_dict())
 
     ##############################
     ##############################
@@ -109,12 +108,11 @@ if __name__ == "__main__":
     actions = jnp.pad(actions, ((0, 0), (0, 0), (0, 24)), mode='constant')  # Pad action dim from 8 to 32, so [1, 15, 8] -> [1, 15, 32] 
     print(f"Action shape input to model -> {actions.shape}")
 
-
-
-
     rng = jax.random.PRNGKey(0)
 
-    model.compute_loss(rng, observation, gt_action)
+    original_llm_call = model.PaliGemma.llm.__call__
+
+    model.compute_loss(rng, observation, actions, train=True)
     
 
      

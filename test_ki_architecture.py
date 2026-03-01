@@ -90,10 +90,12 @@ def test_ki_architecture():
     
     print("\n    Training mode (train=True):")
     loss = model.compute_loss(rng, observation, actions, train=True)
+    print(f"    Computed loss: {loss}")
     
     print("\n    Inference mode (train=False):")
     forward_pass_log.clear()
     loss_eval = model.compute_loss(rng, observation, actions, train=False)
+    print(f"    Computed loss: {loss_eval}")
     
     # Restore original method
     model.PaliGemma.llm.__call__ = original_llm_call

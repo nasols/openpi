@@ -311,7 +311,7 @@ class Pi0(_model.BaseModel):
             # Compute FAST loss (gradients flow to VLM parameters)
             FAST_loss = self.compute_fast_loss(prefix_out_FAST, observation) 
 
-            
+            logger.log(level=103, msg=f"[DEBUG] FAST loss computed: {FAST_loss:.4f}")
 
             #############################################################################
             ###### PART TWO: ACTION LOSS - Reuse KV cache to avoid recomputing VLM ######
@@ -348,7 +348,7 @@ class Pi0(_model.BaseModel):
 
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
             continuous_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
-            
+            logger.log(level=103, msg=f"[DEBUG] Continuous action loss computed: {jnp.mean(continuous_loss):.4f}")
             # Combined loss: both components contribute to final loss
             total_loss = continuous_loss + self.ki_fast_loss_weight * FAST_loss
             return total_loss
