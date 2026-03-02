@@ -15,6 +15,7 @@ import tyro
 
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
+import openpi.models.pi05_config as pi05_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
@@ -124,7 +125,7 @@ class ModelTransformFactory(GroupFactory):
                     ],
                 )
             case _model.ModelType.PI05:
-                assert isinstance(model_config, pi0_config.Pi0Config)
+                assert isinstance(model_config, pi05_config.Pi05Config)
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
@@ -137,7 +138,7 @@ class ModelTransformFactory(GroupFactory):
                     ],
                 )
             case _model.ModelType.PI05_KI:
-                assert isinstance(model_config, pi0_config.Pi0Config)
+                assert isinstance(model_config, pi05_config.Pi05Config)
                 tokenizer_cls = _tokenizer.FASTTokenizer
                    
                 return _transforms.Group(
@@ -558,6 +559,10 @@ class TrainConfig:
     knowledge_insulation_lambda: float = 1.0
     knowledge_insulation : bool = False
 
+    # Hierarchical policy settings
+    hierarchical_mode : bool = False 
+    
+
     @property
     def assets_dirs(self) -> pathlib.Path:
         """Get the assets directory for this config."""
@@ -921,8 +926,7 @@ _CONFIGS = [
         # Here, we use LeRobot data format (like for all other fine-tuning examples)
         # To convert your custom DROID dataset (<10s of hours) to LeRobot format, see examples/droid/convert_droid_data_to_lerobot.py
         name="pi05_droid_finetune",
-        model=pi0_config.Pi0Config(
-            pi05=True,
+        model=pi05_config.Pi05Config(
             action_dim=32,  # pi05 is trained with 32-dim actions
             action_horizon=15,
         ),
@@ -946,8 +950,7 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi05_droid_ki",
-        model=pi0_config.Pi0Config(
-            pi05=True, 
+        model=pi05_config.Pi05Config(
             action_dim=32,
             action_horizon=15, 
             knowledge_insulation=True),
@@ -966,6 +969,32 @@ _CONFIGS = [
         # keep_period=2000,
         batch_size=32,
         fsdp_devices=2,
+
+        knowledge_insulation=True,
+    ),
+    TrainConfig(
+        name="pi05_droid_ki_hi",
+        model=pi05_config.Pi05Config(
+            action_dim=32,
+            action_horizon=15, 
+            knowledge_insulation=True, 
+            hierarchical_mode=True),
+        data=LeRobotDROIDDataConfig(
+            repo_id="lerobot_pickupcube",
+            base_config=DataConfig(prompt_from_task=True), 
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                asset_id="droid"
+            )
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        num_train_steps=2000 + 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
+        save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
+        log_interval=100,
+        # keep_period=2000,
+        batch_size=32,
+        fsdp_devices=2,
+        hierarchical_mode=True,
 
         knowledge_insulation=True,
     ),

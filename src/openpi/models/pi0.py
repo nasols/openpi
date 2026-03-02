@@ -182,7 +182,7 @@ class Pi0(_model.BaseModel):
         # embed images
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
-
+            logger.log(level=103, msg=f"Image '{name}' tokens shape: {image_tokens.shape}")
             tokens.append(image_tokens)
             input_mask.append(
                 einops.repeat(
@@ -197,6 +197,7 @@ class Pi0(_model.BaseModel):
         # add language (aka tokenized inputs)
         if obs.tokenized_prompt is not None:
             tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
+            logger.log(level=103, msg=f"Tokenized prompt tokens shape: {tokenized_inputs.shape}")
             tokens.append(tokenized_inputs)
             input_mask.append(obs.tokenized_prompt_mask)
             # full attention between image and language inputs
@@ -295,6 +296,9 @@ class Pi0(_model.BaseModel):
             #############################################################################
 
             prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+            logger.log(level=103, msg=f"Prefix tokens shape: {prefix_tokens.shape}")
+            logger.log(level=103, msg=f"Prefix mask shape: {prefix_mask.shape}")
+            logger.log(level=103, msg=f"Prefix ar mask shape: {prefix_ar_mask.shape}")
             # prefix attention mask. Separates the image+prompt+state tokens into a bi-directional block 
             ## and the FAST tokens into an autoregressive block.
             prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask) 
@@ -311,7 +315,7 @@ class Pi0(_model.BaseModel):
             # Compute FAST loss (gradients flow to VLM parameters)
             FAST_loss = self.compute_fast_loss(prefix_out_FAST, observation) 
 
-            logger.log(level=103, msg=f"[DEBUG] FAST loss computed: {FAST_loss:.4f}")
+            logger.log(level=103, msg=f"[DEBUG] FAST loss computed: {FAST_loss}")
 
             #############################################################################
             ###### PART TWO: ACTION LOSS - Reuse KV cache to avoid recomputing VLM ######
@@ -326,6 +330,7 @@ class Pi0(_model.BaseModel):
             # Create attention masks for suffix tokens
             # suffix_attn_mask: how suffix tokens attend to each other
             suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            
             # prefix_attn_mask: how suffix tokens can attend to cached prefix
             prefix_attn_mask_for_suffix = einops.repeat(
                 prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1]
@@ -348,7 +353,7 @@ class Pi0(_model.BaseModel):
 
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
             continuous_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
-            logger.log(level=103, msg=f"[DEBUG] Continuous action loss computed: {jnp.mean(continuous_loss):.4f}")
+            logger.log(level=103, msg=f"[DEBUG] Continuous action loss computed: {jnp.mean(continuous_loss)}")
             # Combined loss: both components contribute to final loss
             total_loss = continuous_loss + self.ki_fast_loss_weight * FAST_loss
             return total_loss

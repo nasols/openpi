@@ -5,10 +5,10 @@ import numpy as np
 import pytest
 from dataclasses import dataclass
 from flax import nnx
-
+import cv2
 from openpi.models import pi0_config, model as _model
 from openpi.training import config as _config
-from openpi.models.pi0 import Pi0 
+from openpi.models.pi05 import Pi05
 from openpi import transforms as _transforms
 from openpi.shared import download
 from openpi.policies import policy_config
@@ -45,19 +45,19 @@ testing_parameters = TestingParameters()
 def create_dummy_observation_DROID() -> dict : 
     """Creates a random input example for the Droid policy."""
     return {
-        "observation/exterior_image_1_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+        "observation/exterior_image_1_left": cv2.imread("./franka_ext_view.jpg"), #np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
         "observation/wrist_image_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
         "observation/joint_position": np.random.rand(7),
         "observation/gripper_position": np.random.rand(1),
-        "prompt": "do something",
+        "prompt": "pick up the cube then place it in the bowl",
     }
 
 if __name__ == "__main__":
     
-    config = _config.get_config("pi05_droid_ki")
+    config = _config.get_config("pi05_droid_ki_hi")
     checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
     policy = policy_config.create_trained_policy(config, checkpoint_dir)
-    model = policy._model
+    model : Pi05 = policy._model
 
     print(f"    ✓ Knowledge Insulation enabled: {model.knowledge_insulation}")
     
@@ -102,6 +102,11 @@ if __name__ == "__main__":
     ##############################
     ##############################
 
+
+    #############################
+    #### Computing FAST Loss ####
+    #############################
+
     # Pi05 model is trained with a constant action dim set to 32, so it expects an array of size 32 with the first 8 items populated
     # Pad actions to match model dimension (32)
     actions = jnp.array(gt_action)[np.newaxis, ...] # Smacks an new axis to the front, so [15, 8] -> [1, 15, 8]
@@ -112,7 +117,37 @@ if __name__ == "__main__":
 
     original_llm_call = model.PaliGemma.llm.__call__
 
-    model.compute_loss(rng, observation, actions, train=True)
+    model.compute_loss_ki(rng, observation, actions, train=True)
+
+    #############################
+    #############################
+
+
+    ############################
+    #### Generating Subtask ####
+    ############################
+
+    print("\n[3] Testing subtask generation...")
+    print(model.hierarchical_mode)
+    assert model.hierarchical_mode, "Policy should be in hierarchical mode for subtask generation."
+
+    subtask = model.generate_subtask(
+        rng=rng,
+        observation=observation, 
+        original_prompt=dummy["prompt"], 
+        max_tokens=10, 
+        temperature=0.5
+    )
+
+    print(f"Generated subtask: {subtask}")
+    print(policy._tokenizer._tokenizer.decode(subtask))  # Test that tokenizer is functional after subtask generation
+
+    ############################
+    ############################
+
+
+
+
     
 
      

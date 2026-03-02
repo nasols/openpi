@@ -23,6 +23,8 @@ from openpi.models import tokenizer as _tokenizer
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
+from openpi.models.pi05 import Pi05
+
 import copy
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
@@ -77,15 +79,16 @@ class Policy(BasePolicy):
         self._pytorch_device = pytorch_device
         
         # Hierarchical planning state
-        self._hierarchical_mode = hierarchical_mode
-        self._subtask_template = subtask_template or "Goal: {prompt}; \n Sub-task:"
-        self._subtask_refresh_steps = subtask_refresh_steps
-        self._completion_check_mode = completion_check_mode
-        self._completion_threshold = completion_threshold
-        self._min_steps_per_subtask = min_steps_per_subtask
-        self._current_subtask = None
-        self._original_prompt = None
-        self._step_count = 0
+        if model.pi05: 
+            self._hierarchical_mode = self._model.hierarchical_mode
+            self._subtask_template = subtask_template or "Goal: {prompt}; \n Sub-task:"
+            self._subtask_refresh_steps = subtask_refresh_steps
+            self._completion_check_mode = completion_check_mode
+            self._completion_threshold = completion_threshold
+            self._min_steps_per_subtask = min_steps_per_subtask
+            self._current_subtask = None
+            self._original_prompt = None
+            self._step_count = 0
         
         # Create tokenizer for hierarchical mode (decoding subtasks)
         if self._hierarchical_mode:
@@ -109,8 +112,6 @@ class Policy(BasePolicy):
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         
-        
-
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
 
@@ -138,6 +139,7 @@ class Policy(BasePolicy):
         #############################
         prompt = obs.get("prompt", None)
         if self._hierarchical_mode and prompt is not None:
+            assert isinstance(self._model, Pi05), "Hierarchical mode currently only supports Pi05 model"
             # Check if we need to generate a new subtask
             should_generate_new_subtask = False
             
@@ -178,11 +180,7 @@ class Policy(BasePolicy):
                         token_ids = self._model.generate_subtask(
                             gen_rng, observation, self._original_prompt, max_tokens=20
                         )
-                    else:
-                        # PyTorch version (if implemented)
-                        token_ids = self._model.generate_subtask(
-                            None, observation, self._original_prompt, max_tokens=20
-                        )
+                
                     
                     # Decode token IDs to text
                     subtask_text = self._tokenizer.decode(token_ids)

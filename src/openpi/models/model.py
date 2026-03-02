@@ -283,7 +283,6 @@ class BaseModel(nnx.Module, abc.ABC):
     @abc.abstractmethod
     def sample_actions(self, rng: at.KeyArrayLike, observation: Observation, **kwargs) -> Actions: ...
 
-
 def restore_params(
     params_path: pathlib.Path | str,
     *,
