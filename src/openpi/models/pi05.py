@@ -415,40 +415,55 @@ class Pi05(_model.BaseModel):
         self, 
         rng: at.KeyArrayLike,
         observation: _model.Observation, 
-        original_prompt: str, 
+        original_prompt: str | None = None, 
         max_tokens: int = 20,
         temperature: float = 0.7,
         ) -> list[int]: 
+        """Generate subtask tokens using VLM autoregressive generation with KV caching.
+        
+        NOTE: The observation should contain the decomposition prompt already tokenized.
+        The decomposition prompt should be formatted like:
+        
+        This method generates token IDs that should be decoded externally using a tokenizer.
+        
+        Args:
+            rng: Random key for sampling
+            observation: Observation with images and DECOMPOSITION prompt tokenized
+            original_prompt: Original high-level task (for logging only)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature (0 = greedy)
+            
+        Returns:
+            List of generated token IDs (not including prompt tokens)
+        """
+        if original_prompt is not None:
+            logger.log(level=103, msg=f"[HI-Robot] Generating subtask for prompt: {original_prompt}")
 
-        logger.log(level=103, msg=f"[HI-Robot] Generating subtask for prompt: {original_prompt}")
-
-        subtask_prompt = "Decompose the following task into a sub-task.  Here is the task: \n Task: {prompt}; \n Sub-task: "
-        subtask_prompt = subtask_prompt.format(prompt=original_prompt)
-
-        # Get initial prefix embeddings (images + prompt)
+        # Get initial prefix embeddings (images + DECOMPOSITION prompt from observation)
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        
+        # Initial forward pass to get KV cache
+        (prefix_out, _), kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None],
+            mask=prefix_attn_mask,
+            positions=prefix_positions,
+        )
         
         embedding_table = self.PaliGemma.llm.embedder["input_embedding"]
         generated_tokens = []
         
-        # Autoregressive generation loop
+        # Current sequence length (for position tracking)
+        current_length = prefix_tokens.shape[1]
+        
+        # Autoregressive generation loop with KV caching
         for step in range(max_tokens):
-            # Create attention mask for current sequence
-            prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
-            position = jnp.cumsum(prefix_mask, axis=1) - 1
-            
-            # Forward pass through VLM
-            (prefix_out, _), _ = self.PaliGemma.llm(
-                [prefix_tokens, None],
-                mask=prefix_attn_mask,
-                positions=position,
-            )
-            
             # Get logits for the LAST position (which predicts the next token)
             last_embedding = prefix_out[:, -1:, :]  # Shape: (batch, 1, emb_dim)
             logits = jnp.einsum('bte,ve->btv', last_embedding, embedding_table)  # (batch, 1, vocab_size)
             
-            # Sample or greedily select next token
             if temperature > 0:
                 rng, sample_rng = jax.random.split(rng)
                 next_token_id = jax.random.categorical(
@@ -457,34 +472,44 @@ class Pi05(_model.BaseModel):
             else:
                 # Greedy decoding
                 next_token_id = jnp.argmax(logits[0, 0])
-
-            next_token_id = int(next_token_id)  
             
-            logger.log(level=103, msg=f"[HI-Robot] Step {step}: Generated token ID {next_token_id}")
-            logger.log(level=103, msg=f"[HI-Robot] Step {step}: Logits {logits}, {logits.shape}")
+            next_token_int = int(next_token_id)
             
             # Check for EOS token (1) or newline (108) to stop generation early
-            if next_token_id == 1:
-                logger.log(level=103, msg=f"[HI-Robot] EOS token reached at step {step}")
-                break
-            if next_token_id == 108:
-                logger.log(level=103, msg=f"[HI-Robot] Newline token reached at step {step}")
+            if next_token_int == 1 or next_token_int == 108:
+                if next_token_int == 1:
+                    logger.log(level=103, msg=f"[HI-Robot] EOS token reached at step {step}")
+                else:
+                    logger.log(level=103, msg=f"[HI-Robot] Newline token reached at step {step}")
                 break
 
-            generated_tokens.append(int(next_token_id))
+            generated_tokens.append(next_token_int)
             
-            # Embed the new token and append to prefix for next iteration
+            # Embed the new token
             next_token_embedding = self.PaliGemma.llm(
-                jnp.array([[next_token_id]]), method="embed"
+                jnp.array([[next_token_int]]), method="embed"
             )  # Shape: (1, 1, emb_dim)
             
-            # Append to sequence
-            prefix_tokens = jnp.concatenate([prefix_tokens, next_token_embedding], axis=1)
-            prefix_mask = jnp.concatenate([prefix_mask, jnp.ones((1, 1), dtype=jnp.bool_)], axis=1)
-            prefix_ar_mask = jnp.concatenate([prefix_ar_mask, jnp.array([False])])  # Causal attention for generated tokens
+            # Update position for the new token
+            next_position = jnp.array([[current_length]], dtype=jnp.int32)
+            current_length += 1
+            
+            # Create attention mask for new token (can attend to all previous tokens)
+            # New token attends to: all prefix tokens + all previously generated tokens + itself
+            new_attn_mask = jnp.ones((1, 1, current_length), dtype=jnp.bool_)
+            
+            # Forward pass for ONLY the new token, reusing KV cache
+            (new_out, _), kv_cache = self.PaliGemma.llm(
+                [next_token_embedding, None],
+                mask=new_attn_mask,
+                positions=next_position,
+                kv_cache=kv_cache,  # Reuse cached keys/values from previous tokens
+            )
+            
+            # Update prefix_out for next iteration
+            prefix_out = new_out
         
-        logger.log(level=103, msg=f"[HI-Robot] Generated token IDs: {generated_tokens}")
+        logger.log(level=103, msg=f"[HI-Robot] Generated {len(generated_tokens)} tokens: {generated_tokens}")
         
-    
         return generated_tokens
 
