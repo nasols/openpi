@@ -22,6 +22,7 @@ from openpi.models import model as _model
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 from openpi.models import tokenizer as _tokenizer
+from openpi.models.pi05 import Pi05
 
 import copy
 
@@ -115,6 +116,7 @@ class Policy(BasePolicy):
         #############################
         prompt = obs.get("prompt", None)
         if self._hierarchical_mode and prompt is not None:
+            assert isinstance(self._model, Pi05), "Hierarchical planning currently only supported for Pi05 models"
             _subtask = self._model.generate_subtask(observation, prompt)
             logger.log(level=103, msg=f"[HI-Robot] Generated subtask: {_subtask}")
 

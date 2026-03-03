@@ -18,7 +18,9 @@ from openpi.policies import policy_config
 def print_dict_shapes(obs:dict) -> None :
 
     for key, item in obs.items():
-        if key == "prompt" or isinstance(item, str) or isinstance(item, bool): 
+        if item is None:
+            print(key, " -- None")
+        elif key == "prompt" or isinstance(item, str) or isinstance(item, bool): 
             print(key, " -- ", item)
         elif isinstance(item, dict): 
             print_dict_shapes(item)
@@ -47,13 +49,11 @@ class TestPI05:
         self.load_policy()
 
     def load_policy(self): 
-        self.config = _config.get_config("pi05_droid_ki_hi")
+        self.config = _config.get_config("pi05_droid_hi")
         checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
         self.policy = policy_config.create_trained_policy(self.config, checkpoint_dir)
         self.model : Pi05 = self.policy._model
         self.rng = jax.random.PRNGKey(0)
-
-
 
 
     def create_dummy_observation_DROID(self) -> dict : 
@@ -64,6 +64,17 @@ class TestPI05:
             "observation/joint_position": np.random.rand(7),
             "observation/gripper_position": np.random.rand(1),
             "prompt": "pick up the cube then place it in the middle of the table.",
+        }
+    
+    def create_dummy_observation_DROID_HI(self) -> dict :
+        """Creates a random input example for the Droid HI policy."""
+        return {
+            "observation/exterior_image_1_left": cv2.imread("./franka_ext_view.jpg"), #np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+            "observation/wrist_image_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+            "observation/joint_position": np.random.rand(7),
+            "observation/gripper_position": np.random.rand(1),
+            "prompt": "pick up the cube then place it in the middle of the table.",
+            "subtask": "pick up the cube",
         }
     
     def test_data_transforms(self): 
@@ -162,6 +173,37 @@ class TestPI05:
                 print("No tokens generated (EOS reached immediately)")
 
 
+    def test_compute_loss(self): 
+        if self.model.hierarchical_mode: 
+            self.dummy = self.create_dummy_observation_DROID_HI()
+        else: 
+            self.dummy = self.create_dummy_observation_DROID()
+
+        self.actions = np.random.randn(15, 8).astype(np.float32)        
+        
+        dummy_w_actions = self.dummy.copy()
+        dummy_w_actions["actions"] = self.actions
+        
+        data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
+        data_input_transforms = _transforms.compose(data_config.data_transforms.inputs)
+        data_output_transforms = _transforms.compose(data_config.data_transforms.outputs)
+        model_transforms = _transforms.compose(data_config.model_transforms.inputs)
+
+        inputs = jax.tree.map(lambda x: x, dummy_w_actions) 
+        inputs = data_input_transforms(inputs) 
+        inputs = model_transforms(inputs)
+
+        inputs = jax.tree.map(
+            lambda x: jnp.asarray(x)[np.newaxis, ...], 
+            inputs
+        )
+        self.observation = _model.Observation.from_dict(inputs)
+
+        actions = jnp.array(self.actions)[np.newaxis, ...] # Smacks an new axis to the front, so [15, 8] -> [1, 15, 8]
+        actions = jnp.pad(actions, ((0, 0), (0, 0), (0, 24)), mode='constant')  # Pad action dim from 8 to 32, so [1, 15, 8] -> [1, 15, 32] 
+        print(f"Action shape input to model -> {actions.shape}")
+
+        self.model.compute_loss(self.rng, self.observation, actions, train=True)
 
         
 
@@ -169,9 +211,14 @@ class TestPI05:
 if __name__ == "__main__":
     
     test_pi05 = TestPI05()
+    print("Model type:", test_pi05.model.model_type)
+    assert isinstance(test_pi05.model, Pi05), "Loaded model should be an instance of Pi05"
     test_pi05.test_data_transforms()
-    test_pi05.test_compute_fast_loss()
-    test_pi05.test_subtask_generation()
+    
+    # test_pi05.test_compute_fast_loss()
+    test_pi05.test_compute_loss()
+    
+
 
 
     

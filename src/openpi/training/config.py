@@ -157,6 +157,21 @@ class ModelTransformFactory(GroupFactory):
                     # No output transform needed - KI model outputs actions directly
                     # (uses FAST tokens + action expert internally)
                 )
+            
+            case _model.ModelType.PI05_HI: 
+                assert isinstance(model_config, pi05_config.Pi05Config)
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizeHierarchicalPrompt(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                        ),
+                        _transforms.PadStatesAndActions(model_config.action_dim),
+                    ],
+                    outputs=[]
+                )
+
             case _model.ModelType.PI0_FAST:
                 tokenizer_cls = (
                     _tokenizer.FASTTokenizer
@@ -973,11 +988,11 @@ _CONFIGS = [
         knowledge_insulation=True,
     ),
     TrainConfig(
-        name="pi05_droid_ki_hi",
+        name="pi05_droid_hi",
         model=pi05_config.Pi05Config(
             action_dim=32,
             action_horizon=15, 
-            knowledge_insulation=True, 
+            knowledge_insulation=False, 
             hierarchical_mode=True),
         data=LeRobotDROIDDataConfig(
             repo_id="lerobot_pickupcube",
@@ -996,7 +1011,7 @@ _CONFIGS = [
         fsdp_devices=2,
         hierarchical_mode=True,
 
-        knowledge_insulation=True,
+        knowledge_insulation=False,
     ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.

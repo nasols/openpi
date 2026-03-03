@@ -48,6 +48,8 @@ class Pi05Config(_model.BaseModelConfig):
     def model_type(self) -> _model.ModelType:
         if self.knowledge_insulation:
             return _model.ModelType.PI05_KI
+        elif self.hierarchical_mode:
+            return _model.ModelType.PI05_HI
         return _model.ModelType.PI05
         
     @override

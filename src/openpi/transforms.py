@@ -270,6 +270,46 @@ class TokenizePrompt(DataTransformFn):
         tokens, token_masks = self.tokenizer.tokenize(prompt, state)
         return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
 
+@dataclasses.dataclass(frozen=True)
+class TokenizeHierarchicalPrompt(DataTransformFn):
+    tokenizer: _tokenizer.PaligemmaTokenizer
+    
+    def __call__(self, data: DataDict) -> DataDict:
+        prompt = data.pop("prompt")
+        try: 
+            subtask = data.pop("subtask")  # Ground truth from dataset
+        except: 
+            subtask = None
+
+        state = data["state"]
+        
+        if subtask is not None: 
+            # Gives out tokenized prompt of format: "Task: {subtastk}, State: {state}, Action: "
+            tokens, token_masks = self.tokenizer.tokenize(subtask, state) # Tokenizing the subtask *Teacher forcing*
+
+            # Gives out tokenized prompt of format: "Task: {prompt}, State: {state}, Subtask: " 
+            st_tokens, st_token_masks = self.tokenizer.tokenize_subtask(prompt, state) # Tokenizing the decomposition prompt
+
+            # Gives out the tokenized subtask raw as well as the mask 
+            st_gt_tokens, st_gt_token_masks = self.tokenizer.tokenize(subtask)
+
+            return {
+                **data,
+                "tokenized_prompt": tokens,  # Decomposition prompt
+                "tokenized_prompt_mask": token_masks,
+                "subtask_tokens": st_tokens, # Tokens of subtask for action prediction.
+                "subtask_mask": st_token_masks,
+                "subtask_gt_tokens": st_gt_tokens, # Tokens of subtask for computing subtask generation loss.
+                "subtask_gt_mask": st_gt_token_masks,
+            }
+        
+        else: 
+            tokens, token_masks = self.tokenizer.tokenize_subtask(prompt, state) # Tokenizing the decomposition prompt
+            return {
+                **data,
+                "tokenized_prompt": tokens,  # Decomposition prompt
+                "tokenized_prompt_mask": token_masks,
+            }
 
 @dataclasses.dataclass(frozen=True)
 class TokenizeFASTInputs(DataTransformFn):

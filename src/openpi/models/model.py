@@ -34,6 +34,8 @@ class ModelType(enum.Enum):
     PI0_FAST = "pi0_fast"
     PI05 = "pi05"
     PI05_KI = "pi05_ki"
+    PI05_HI = "pi05_hi"
+    PI05_KI_HI = "pi05_ki_hi"
 
 
 # The model always expects these images
@@ -69,6 +71,7 @@ IMAGE_RESOLUTION = (224, 224)
 #     "tokenized_prompt_mask": bool[*b, l],  # Optional, mask for tokenized prompt
 #     "token_ar_mask": int32[*b, l],  # Optional, autoregressive mask for FAST model
 #     "token_loss_mask": bool[*b, l],  # Optional, loss mask for FAST model
+#
 #
 #      # Actions data.
 #      "actions": float32[*b ah ad]
@@ -107,6 +110,13 @@ class Observation(Generic[ArrayT]):
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
+    # Hierarchical mode specific fields (for HI-Robot).
+    # Ground truth subtask tokens (the subtask text itself, e.g., "Pick up the red block").
+    subtask_tokens: at.Int[ArrayT, "*b l"] | None = None
+    subtask_mask: at.Bool[ArrayT, "*b l"] | None = None
+    subtask_gt_tokens: at.Int[ArrayT, "*b l"] | None = None
+    subtask_gt_mask: at.Bool[ArrayT, "*b l"] | None = None
+
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
         """This method defines the mapping between unstructured data (i.e., nested dict) to the structured Observation format."""
@@ -127,6 +137,10 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            subtask_tokens=data.get("subtask_tokens"),
+            subtask_mask=data.get("subtask_mask"),
+            subtask_gt_tokens=data.get("subtask_gt_tokens"),
+            subtask_gt_mask=data.get("subtask_gt_mask"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -198,6 +212,8 @@ def preprocess_observation(
         else:
             out_masks[key] = jnp.asarray(observation.image_masks[key])
 
+
+
     return Observation(
         images=out_images,
         image_masks=out_masks,
@@ -206,6 +222,10 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        subtask_tokens=observation.subtask_tokens,
+        subtask_mask=observation.subtask_mask,
+        subtask_gt_tokens=observation.subtask_gt_tokens,
+        subtask_gt_mask=observation.subtask_gt_mask,
     )
 
 
