@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import torch
+from torch.utils.data import WeightedRandomSampler
 
 import openpi.models.model as _model
 import openpi.training.config as _config
@@ -127,10 +128,133 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+class MixedDataset(Dataset):
+    """Dataset that mixes multiple LeRobot datasets with specified sampling weights.
+    
+    This dataset creates a weighted mixture of multiple datasets, where each dataset
+    can be sampled with a different probability. The total number of samples is the
+    sum of all individual dataset sizes.
+    
+    Args:
+        datasets: List of individual LeRobot datasets.
+        weights: List of sampling weights for each dataset. Higher weights mean more
+                samples will be drawn from that dataset during training.
+    """
+    
+    def __init__(self, datasets: Sequence[Dataset], weights: Sequence[float]):
+        if len(datasets) != len(weights):
+            raise ValueError(f"Number of datasets ({len(datasets)}) must match number of weights ({len(weights)})")
+        
+        if len(datasets) == 0:
+            raise ValueError("Must provide at least one dataset")
+        
+        self._datasets = list(datasets)
+        self._weights = list(weights)
+        
+        # Calculate cumulative dataset sizes for mapping indices
+        self._dataset_sizes = [len(ds) for ds in self._datasets]
+        self._cumulative_sizes = np.cumsum([0] + self._dataset_sizes)
+        self._total_size = sum(self._dataset_sizes)
+        
+        # Normalize weights
+        total_weight = sum(self._weights)
+        self._normalized_weights = [w / total_weight for w in self._weights]
+        
+        # Create sample weights for each individual sample
+        # Each sample gets the weight of its parent dataset divided by dataset size
+        sample_weights = []
+        for dataset_idx, (ds_size, ds_weight) in enumerate(zip(self._dataset_sizes, self._normalized_weights)):
+            # Each sample in this dataset gets equal probability within the dataset's allocation
+            weight_per_sample = ds_weight / ds_size
+            sample_weights.extend([weight_per_sample] * ds_size)
+        
+        self._sample_weights = sample_weights
+        
+        logging.info(f"Created MixedDataset with {len(datasets)} datasets:")
+        for i, (ds, weight, size) in enumerate(zip(self._datasets, self._weights, self._dataset_sizes)):
+            logging.info(f"  Dataset {i}: {size} samples, weight={weight:.3f} ({self._normalized_weights[i]*100:.1f}%)")
+    
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        idx = index.__index__()
+        if idx < 0 or idx >= self._total_size:
+            raise IndexError(f"Index {idx} out of range for dataset of size {self._total_size}")
+        
+        # Find which dataset this index belongs to
+        dataset_idx = np.searchsorted(self._cumulative_sizes[1:], idx, side='right')
+        
+        # Calculate the local index within that dataset
+        local_idx = idx - self._cumulative_sizes[dataset_idx]
+        
+        return self._datasets[dataset_idx][local_idx]
+    
+    def __len__(self) -> int:
+        return self._total_size
+    
+    def get_sample_weights(self) -> list[float]:
+        """Returns sample weights for use with WeightedRandomSampler."""
+        return self._sample_weights
+
+
 def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
-    """Create a dataset for training."""
+    """Create a dataset for training.
+    
+    Supports both single dataset and mixed dataset configurations.
+    
+    Args:
+        data_config: Data configuration specifying either a single repo_id or multiple repo_ids.
+        action_horizon: Number of future timesteps to include in action sequences.
+        model_config: Model configuration.
+    
+    Returns:
+        A Dataset instance that can be either a single LeRobotDataset, MixedDataset, or FakeDataset.
+    """
+    # Handle mixed dataset configuration
+    if data_config.repo_ids is not None:
+        if len(data_config.repo_ids) == 0:
+            raise ValueError("repo_ids list is empty. Must provide at least one dataset configuration.")
+        
+        logging.info(f"Creating mixed dataset with {len(data_config.repo_ids)} datasets")
+        
+        datasets = []
+        weights = []
+        all_tasks = {}  # Combined task mapping for prompt_from_task
+        
+        for dataset_config in data_config.repo_ids:
+            repo_id = dataset_config.repo_id
+            weight = dataset_config.weight
+            
+            logging.info(f"Loading dataset: {repo_id} (weight={weight})")
+            
+            dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+            dataset = lerobot_dataset.LeRobotDataset(
+                repo_id,
+                delta_timestamps={
+                    key: [t / dataset_meta.fps for t in range(action_horizon)] 
+                    for key in data_config.action_sequence_keys
+                },
+            )
+            
+            # Merge tasks from all datasets
+            all_tasks.update(dataset_meta.tasks)
+            
+            datasets.append(dataset)
+            weights.append(weight)
+        
+        # Create mixed dataset
+        mixed_dataset = MixedDataset(datasets, weights)
+        
+        # Apply prompt transform if needed
+        if data_config.prompt_from_task:
+            mixed_dataset = TransformedDataset(
+                mixed_dataset, 
+                [_transforms.PromptFromLeRobotTask(all_tasks)]
+            )
+        
+        return mixed_dataset
+    
+    # Handle single dataset configuration (original behavior)
     repo_id = data_config.repo_id
     if repo_id is None:
         raise ValueError("Repo ID is not set. Cannot create dataset.")
@@ -172,7 +296,9 @@ def create_rlds_dataset(
 def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip_norm_stats: bool = False) -> Dataset:
     """Transform the dataset by applying the data transforms."""
     norm_stats = {}
-    if data_config.repo_id != "fake" and not skip_norm_stats:
+    # Check if we're using real data (not fake) - works for both single and mixed datasets
+    is_real_data = (data_config.repo_id is not None and data_config.repo_id != "fake") or data_config.repo_ids is not None
+    if is_real_data and not skip_norm_stats:
         if data_config.norm_stats is None:
             raise ValueError(
                 "Normalization stats not found. "
@@ -200,7 +326,9 @@ def transform_iterable_dataset(
 ) -> IterableDataset:
     """Transform the dataset by applying the data transforms."""
     norm_stats = {}
-    if data_config.repo_id != "fake" and not skip_norm_stats:
+    # Check if we're using real data (not fake) - works for both single and mixed datasets
+    is_real_data = (data_config.repo_id is not None and data_config.repo_id != "fake") or data_config.repo_ids is not None
+    if is_real_data and not skip_norm_stats:
         if data_config.norm_stats is None:
             raise ValueError(
                 "Normalization stats not found. "

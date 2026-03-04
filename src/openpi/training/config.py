@@ -63,9 +63,23 @@ class AssetsConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotDatasetConfig:
+    """Configuration for a single LeRobot dataset in a mixed dataset setup."""
+    # The LeRobot repo id.
+    repo_id: str
+    # Sampling weight for this dataset (higher weight = more samples from this dataset).
+    # If not specified, defaults to 1.0.
+    weight: float = 1.0
+
+
+@dataclasses.dataclass(frozen=True)
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
+    # If repo_ids is specified, this should be None.
     repo_id: str | None = None
+    # List of dataset configurations for mixed dataset training.
+    # If specified, repo_id should be None.
+    repo_ids: Sequence[LeRobotDatasetConfig] | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -201,8 +215,11 @@ class ModelTransformFactory(GroupFactory):
 
 @dataclasses.dataclass(frozen=True)
 class DataConfigFactory(abc.ABC):
-    # The LeRobot repo id.
-    repo_id: str = tyro.MISSING
+    # The LeRobot repo id. Can be a single string or None if using repo_ids.
+    repo_id: str | None = tyro.MISSING
+    # List of dataset configurations for mixed dataset training.
+    # If specified, repo_id will be ignored.
+    repo_ids: Sequence[LeRobotDatasetConfig] | None = None
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -213,11 +230,21 @@ class DataConfigFactory(abc.ABC):
         """Create a data config."""
 
     def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
-        asset_id = self.assets.asset_id or repo_id
+        # Determine repo_id: use repo_ids if available, otherwise use repo_id
+        if self.repo_ids is not None:
+            # Mixed dataset mode: repo_id will be None, and repo_ids will be set
+            repo_id = None
+            dataset_configs = self.repo_ids
+        else:
+            # Single dataset mode
+            repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
+            dataset_configs = None
+        
+        asset_id = self.assets.asset_id or (repo_id if isinstance(repo_id, str) else None)
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
+            repo_ids=dataset_configs,
             asset_id=asset_id,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
             use_quantile_norm=model_config.model_type != ModelType.PI0,
@@ -238,7 +265,7 @@ class DataConfigFactory(abc.ABC):
 
 @dataclasses.dataclass(frozen=True)
 class FakeDataConfig(DataConfigFactory):
-    repo_id: str = "fake"
+    repo_id: str | None = "fake"
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -1013,6 +1040,38 @@ _CONFIGS = [
         hierarchical_mode=True,
 
         knowledge_insulation=False,
+    ),
+    TrainConfig(
+        # Example config demonstrating how to train on a mixture of multiple DROID datasets.
+        # This allows combining data from different tasks or environments with configurable sampling weights.
+        # See docs/mixed_datasets.md for more details.
+        name="pi05_droid_mixed_example",
+        model=pi05_config.Pi05Config(
+            action_dim=32,
+            action_horizon=15,
+        ),
+        data=LeRobotDROIDDataConfig(
+            # Use repo_ids instead of repo_id to specify multiple datasets
+            repo_ids=[
+                # Each dataset can have a different sampling weight
+                # Higher weight = more samples from this dataset during training
+                LeRobotDatasetConfig(repo_id="your_username/droid_dataset1", weight=1.0),
+                LeRobotDatasetConfig(repo_id="your_username/droid_dataset2", weight=2.0),  # Sampled 2x more
+                LeRobotDatasetConfig(repo_id="your_username/droid_dataset3", weight=1.0),
+            ],
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                # Important: use the same normalization stats for all datasets
+                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                asset_id="droid",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        num_train_steps=2000,
+        save_interval=1000,
+        log_interval=100,
+        batch_size=32,
+        fsdp_devices=2,
     ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
