@@ -1008,6 +1008,7 @@ _CONFIGS = [
         num_train_steps=10,
         wandb_enabled=False,
         knowledge_insulation=True,
+        
     ),
     TrainConfig(
         name="debug_restore",

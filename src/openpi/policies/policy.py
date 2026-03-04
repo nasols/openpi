@@ -98,9 +98,6 @@ class Policy(BasePolicy):
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
-        
-        
-
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
 
@@ -126,10 +123,10 @@ class Policy(BasePolicy):
 
         ### HIERARCHICAL PLANNING ###
         #############################
-        prompt = obs.get("prompt", None)
-        if self._hierarchical_mode and prompt is not None:
-            _subtask = self._model.generate_subtask(observation, prompt)
-            logger.log(level=103, msg=f"[HI-Robot] Generated subtask: {_subtask}")
+        # prompt = obs.get("prompt", None)
+        # if self._hierarchical_mode and prompt is not None:
+        #     _subtask = self._model.generate_subtask(observation, prompt)
+        #     logger.log(level=103, msg=f"[HI-Robot] Generated subtask: {_subtask}")
 
         ############################
         start_time = time.monotonic()
