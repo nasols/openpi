@@ -19,6 +19,7 @@ from openpi import transforms as _transforms
 
 
 
+
 logger = logging.getLogger("openpi")
 
 
@@ -79,7 +80,9 @@ class Pi05(_model.BaseModel):
         self.model_type = config.model_type
         self.knowledge_insulation = config.knowledge_insulation
         self.ki_fast_loss_weight = config.ki_fast_loss_weight
-        self.hierarchical_mode = config.hierarchical_mode 
+        self.hierarchical_mode = config.hierarchical_mode
+        # For hierarchical mode, use same weight as FAST loss (both are text generation)
+        self.ki_subtask_loss_weight = config.ki_fast_loss_weight 
         # TODO: rewrite gemma in NNX. For now, use bridge.
         llm = nnx_bridge.ToNNX( # Init PaliGemma model
             _gemma.Module(
@@ -140,6 +143,14 @@ class Pi05(_model.BaseModel):
         text_token_len = observation.tokenized_prompt.shape[1]
         text_embeddings = prefix_out[:, -text_token_len:]  # Last text_token_len positions
         
+        jax.debug.print("\n🔍 FAST LOSS COMPUTATION:")
+        jax.debug.print("  Total prefix_out length: {L}", L=prefix_out.shape[1])
+        jax.debug.print("  Tokenized prompt length: {T}", T=text_token_len)
+        jax.debug.print("  Extracting last {T} positions for text", T=text_token_len)
+        jax.debug.print("  Text tokens (first 10): {t}", t=observation.tokenized_prompt[0][:10])
+        jax.debug.print("  Loss mask (first 10): {m}", m=observation.token_loss_mask[0][:10])
+        jax.debug.print("  Num tokens with loss mask=True: {n}", n=jnp.sum(observation.token_loss_mask[0]))
+        
         # Decode hidden states to vocabulary logits
         # Use text_embeddings[:, :-1] to predict next token (no prediction for last token)
         # Memory-efficient: Use einsum with optimal contraction order
@@ -156,6 +167,14 @@ class Pi05(_model.BaseModel):
             logits, target_tokens
         )  # Shape: (batch, seq_len-1)
         
+        # Show predicted vs target FAST tokens
+        predicted_tokens = jnp.argmax(logits, axis=-1)
+        # Find first few positions where loss_mask is True
+        mask_indices = jnp.where(loss_mask[0])[0][:5]
+        jax.debug.print("  First 5 FAST token positions: {idx}", idx=mask_indices)
+        jax.debug.print("  PREDICTED FAST tokens: {p}", p=predicted_tokens[0, mask_indices])
+        jax.debug.print("  GROUND TRUTH tokens:   {t}", t=target_tokens[0, mask_indices])
+        
         # Apply loss mask: only compute loss on FAST tokens
         masked_loss = per_token_loss * loss_mask
         
@@ -167,63 +186,57 @@ class Pi05(_model.BaseModel):
         # Average over batch
         return jnp.mean(batch_loss)
 
-    def _compute_subtask_loss(self, prefix_out: at.Float[at.Array, "b s emb"], subtask_tokens: at.Int[at.Array, "b s"]) -> at.Float[at.Array, ""]:
-        """Compute subtask prediction loss for hierarchical training.
+    def _compute_subtask_loss(self, prefix_out: at.Float[at.Array, "b s emb"], subtask_tokens: at.Int[at.Array, "b s"], subtask_mask: at.Bool[at.Array, "b s"]) -> at.Float[at.Array, ""]:
+        """Compute subtask prediction loss with teacher forcing.
         
         Args:
-            prefix_out: Hidden states from VLM forward pass (batch, seq_len, embed_dim)
-                        This contains embeddings for: [image_tokens, decomposition_prompt_tokens]
-            subtask_tokens: Ground truth subtask tokens from dataset (batch, subtask_len)
+            prefix_out: Hidden states from VLM (batch, seq_len, embed_dim)
+                        Contains: [image_tokens, decomposition_prompt_tokens, GT_subtask_tokens]
+            subtask_tokens: Ground truth subtask tokens (batch, subtask_len)
+                            Full sequence WITHOUT BOS (e.g., ["pick", "up", "the", "cube"])
+            subtask_mask: Boolean mask for valid subtask tokens (batch, subtask_len)
             
         Returns:
-            Scalar loss value for subtask prediction
+            Scalar loss for subtask prediction
         """
         if subtask_tokens is None:
             return jnp.array(0.0)  
         
-        # Extract target tokens for next-token prediction (shift by 1)
-        # [BOS, "Pick", "up", "block"] -> ["Pick", "up", "block"]
-        target_tokens = subtask_tokens[:, 1:]  # Shape: (batch, seq_len-1)
-        
-        # Extract text token embeddings from prefix_out
-        # prefix_out contains: [image_tokens, decomposition_prompt_tokens]
-        # We want to extract the portion corresponding to the generated subtask
+        # For next-token prediction, we need the hidden state BEFORE each token to predict it
+        # Extract N+1 positions: the position before first token + all N subtask token positions
+        # Example: to predict ["pick", "up", "the"], we need hidden states at ["Subtask:", "pick", "up"]
         text_token_len = subtask_tokens.shape[1]
-        text_embeddings = prefix_out[:, -text_token_len:]  # Last text_token_len positions
+        text_embeddings = prefix_out[:, -(text_token_len + 1):]  # (batch, text_len+1, emb)
         
-        # Decode hidden states to vocabulary logits
-        # Use text_embeddings[:, :-1] to predict next token (no prediction for last token)
+        # Target is the full subtask (no shift needed since we have the extra position)
+        target_tokens = subtask_tokens  # (batch, seq_len)
+        
+        # Decode to vocabulary logits
+        # Use all N positions (from before first token to before last token) to predict N tokens
         embedding_table = self.PaliGemma.llm.embedder["input_embedding"]
         logits = jnp.einsum(
             'bse,ve->bsv', 
-            text_embeddings[:, :-1], 
+            text_embeddings[:, :-1],  # Exclude last position, use N positions before each target
             embedding_table,
             optimize='optimal'
-        )  # Shape: (batch, seq_len-1, vocab_size)
+        )  # Shape: (batch, seq_len, vocab_size)
         
-        # Compute cross-entropy loss for each token
-        per_token_loss = optax.softmax_cross_entropy_with_integer_labels(
-            logits, target_tokens
-        )  # Shape: (batch, seq_len-1)
-
-        # For subtask loss, we compute loss on ALL subtask tokens
-        # (Unlike FAST loss where we mask out the prompt portion)
-        # However, we should still handle padding tokens if present
+        # Predict tokens and show for debugging
+        predicted_token_ids = jnp.argmax(logits, axis=-1)
         
-        # Create mask: True for valid tokens, False for padding (token_id = 0 or False in mask)
-        # Assume padding tokens have value 0 or we can use gt_subtask_mask if available
-        valid_mask = (target_tokens != 0).astype(jnp.float32)  # Shape: (batch, seq_len-1)
+        # For clarity: show what the model is learning
+        jax.debug.print("\n📝 SUBTASK PREDICTION:")
+        jax.debug.print("  FULL SUBTASK (target): {x}", x=target_tokens[0][:10])  # What we want to generate
+        jax.debug.print("  PREDICTED (output):    {x}\n", x=predicted_token_ids[0][:10])  # What model predicts
         
-        # Apply mask to loss
+        # Compute loss
+        per_token_loss = optax.softmax_cross_entropy_with_integer_labels(logits, target_tokens)
+        valid_mask = subtask_mask.astype(jnp.float32)  # No shift needed
+        jax.debug.print("valid tokens per ex: {x}", x=jnp.sum(valid_mask, axis=-1))
         masked_loss = per_token_loss * valid_mask
         
-        # Normalize by number of valid tokens per sample
-        sum_masked_loss = jnp.sum(masked_loss, axis=-1)  # Sum over sequence
-        num_tokens = jnp.clip(jnp.sum(valid_mask, axis=-1), 1)  # Avoid division by zero
-        batch_loss = sum_masked_loss / num_tokens  # Normalize per sample
-        
-        # Average over batch
-        return jnp.mean(batch_loss)
+        mean_loss = jnp.mean(jnp.sum(masked_loss, axis=-1) / jnp.clip(jnp.sum(valid_mask, axis=-1), 1))
+        return mean_loss
 
     @at.typecheck
     def embed_prefix(
@@ -354,6 +367,10 @@ class Pi05(_model.BaseModel):
         # Compute FAST loss based on VLM output and observation tokens
         FAST_loss = self._compute_fast_loss(prefix_out_FAST, observation) 
 
+        jax.debug.print("\n📊 KNOWLEDGE INSULATION - PART 1 (FAST LOSS):")
+        jax.debug.print("  prefix_out shape: {s}", s=prefix_out_FAST.shape)
+        jax.debug.print("  FAST loss: {loss}", loss=FAST_loss)
+
         logger.log(level=103, msg=f"[DEBUG] FAST loss: {FAST_loss}")
 
         #############################################################################
@@ -395,7 +412,7 @@ class Pi05(_model.BaseModel):
     @override
     def compute_loss_hierarchical(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
-    ) -> at.Float[at.Array, "*b ah"]:
+    ) -> any : #at.Float[at.Array, "*b ah"]:
         """
         Compute loss for hierarchical policy training with TEACHER FORCING.
         
@@ -406,6 +423,26 @@ class Pi05(_model.BaseModel):
             - tokenized_prompt: Decomposition prompt (e.g., "Decompose task into subtask. Task: {task}, State: {state}")
             - gt_subtask_tokens: Ground truth subtask text (e.g., "Pick up red block")
             - gt_action_prompt_tokens: Action prompt with subtask embedded (e.g., "What should robot do? State: {state}, Task: {subtask}, Action:")
+        
+        We expect observation to contain a tokenized subtask which is the ground truth subtask that the VLM should produce. 
+        The Observation structure: 
+        {
+            "state": jnp.array (1, 32),
+            "base_0_rgb": jnp.array (1, 224, 224, 3)
+            "left_wrist_0_rgb": jnp.array (1, 224, 224, 3)
+            "right_wrist_0_rgb": jnp.array (1, 224, 224, 3)
+            "base_0_rgb": jnp.array (1,)
+            "left_wrist_0_rgb": jnp.array (1,)
+            "right_wrist_0_rgb": jnp.array (1,)
+
+            "tokenized_prompt": jnp.array (1, 200), <-- tokenized decomposition prompt to make subtask, i.e. "Task:{prompt}, State:{state}, Subtask:"
+            "tokenized_prompt_mask": jnp.array (1, 200),
+            
+            "subtask_tokens": <-- Tokenized prompt to make actions, i.e. "Task: {subtask}, State:{state}, Action:" 
+            "subtask_mask": 
+            "subtask_gt_tokens": <-- Tokenized the ground truth subtask text, i.e. "Move forward", used in loss function
+            "subtask_gt_mask":
+        }
         """
 
         # Prepare noisy actions for diffusion
@@ -423,8 +460,27 @@ class Pi05(_model.BaseModel):
         ######## PART ONE: Subtask Prediction Loss (VLM Training) #######
         #################################################################
         
-        # Forward pass with decomposition prompt (from observation.tokenized_prompt)
+        # Teacher forcing: concatenate GT subtask to decomposition prompt
+        # Input becomes: [images, "Task: X, State: Y, Subtask:", "Pick", "up", "the", "cube"]
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        
+        # Embed GT subtask tokens and concatenate
+        if observation.subtask_gt_tokens is not None:
+            logger.log(level=103, msg="[DEBUG] Embedding ground truth subtask tokens for teacher forcing.")
+
+            subtask_embeddings = self.PaliGemma.llm(observation.subtask_gt_tokens, method="embed")
+            
+            # All tokens for generating subtask. This is the prefix + task decomposition prompt + embedded subtask
+            prefix_tokens = jnp.concatenate([prefix_tokens, subtask_embeddings], axis=1)
+
+            # Indicating what tokens are actual tokens and which are padding. 
+            prefix_mask = jnp.concatenate([prefix_mask, observation.subtask_gt_mask], axis=1)
+
+            # Subtask tokens use causal attention (can't see future tokens)
+            # Set to True to enable causal attention within subtask
+            subtask_ar_mask = jnp.array([True] * subtask_embeddings.shape[1])
+            prefix_ar_mask = jnp.concatenate([prefix_ar_mask, subtask_ar_mask])
+        
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
         
@@ -433,10 +489,12 @@ class Pi05(_model.BaseModel):
             mask=prefix_attn_mask,
             positions=prefix_positions,
         )
+
+        jax.debug.print("\n🔍 PREDICTED SUBTASK TOKENS: {x}", x=prefix_out_pred.shape)
         
-        # Compute subtask loss against ground truth subtask tokens (gradients WILL flow to VLM)
-        subtask_loss = self._compute_subtask_loss(prefix_out_pred, observation.subtask_tokens)
-        logger.log(level=103, msg=f"[DEBUG] Subtask loss: {subtask_loss}")
+        # Compute loss on all subtask tokens
+        subtask_loss = self._compute_subtask_loss(prefix_out_pred, observation.subtask_gt_tokens, observation.subtask_gt_mask)
+        logger.log(level=103, msg=f"[DEBUG] Subtask prediction loss: {subtask_loss}")
 
         #########################################################################################
         ######## PART TWO: Action Loss with Ground Truth Action Prompt (Teacher Forcing) ########
@@ -448,8 +506,8 @@ class Pi05(_model.BaseModel):
             images=observation.images,
             image_masks=observation.image_masks,
             state=observation.state,
-            tokenized_prompt=observation.gt_action_prompt_tokens,  # Action prompt with subtask
-            tokenized_prompt_mask=observation.gt_action_prompt_mask,
+            tokenized_prompt=observation.subtask_tokens,  # Action prompt with subtask
+            tokenized_prompt_mask=observation.subtask_gt_mask,
             token_ar_mask=observation.token_ar_mask,
             token_loss_mask=None,
         )
@@ -623,7 +681,7 @@ class Pi05(_model.BaseModel):
     # This todo is only affecting the HI-Robot part of the pipeline. Maybe not even crucial for training. 
 
     @at.typecheck
-    def generate_subtask(
+    def _generate_subtask(
         self, 
         rng: at.KeyArrayLike,
         observation: _model.Observation, 

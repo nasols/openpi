@@ -479,6 +479,7 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
                         "observation/gripper_position": "gripper_position",
                         "actions": "actions",
                         "prompt": "prompt",
+                        "subtask": "subtask",
                     }
                 )
             ]

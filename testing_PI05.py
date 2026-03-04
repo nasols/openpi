@@ -49,7 +49,7 @@ class TestPI05:
         self.load_policy()
 
     def load_policy(self): 
-        self.config = _config.get_config("pi05_droid_hi")
+        self.config = _config.get_config("pi05_droid_ki")  # Test KI mode
         checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
         self.policy = policy_config.create_trained_policy(self.config, checkpoint_dir)
         self.model : Pi05 = self.policy._model
@@ -73,8 +73,8 @@ class TestPI05:
             "observation/wrist_image_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
             "observation/joint_position": np.random.rand(7),
             "observation/gripper_position": np.random.rand(1),
-            "prompt": "pick up the cube then place it in the middle of the table.",
-            "subtask": "pick up the cube",
+            "prompt": "pick up the cube",
+            "subtask": "move towards the red cube",
         }
     
     def test_data_transforms(self): 
@@ -151,7 +151,7 @@ class TestPI05:
             )
             
             # Generate subtask token IDs
-            subtask_token_ids = self.model.generate_subtask(
+            subtask_token_ids = self.model._generate_subtask(
                 rng=self.rng,
                 observation=decomp_observation,  # Use observation with decomposition prompt
                 original_prompt=original_prompt, 
@@ -174,7 +174,9 @@ class TestPI05:
 
 
     def test_compute_loss(self): 
+        assert isinstance(self.model, Pi05), "Model should be an instance of Pi05 for this test."
         if self.model.hierarchical_mode: 
+            print("creating HI dummy data")
             self.dummy = self.create_dummy_observation_DROID_HI()
         else: 
             self.dummy = self.create_dummy_observation_DROID()
@@ -192,11 +194,12 @@ class TestPI05:
         inputs = jax.tree.map(lambda x: x, dummy_w_actions) 
         inputs = data_input_transforms(inputs) 
         inputs = model_transforms(inputs)
-
+        
         inputs = jax.tree.map(
             lambda x: jnp.asarray(x)[np.newaxis, ...], 
             inputs
         )
+
         self.observation = _model.Observation.from_dict(inputs)
 
         actions = jnp.array(self.actions)[np.newaxis, ...] # Smacks an new axis to the front, so [15, 8] -> [1, 15, 8]
@@ -213,14 +216,19 @@ if __name__ == "__main__":
     test_pi05 = TestPI05()
     print("Model type:", test_pi05.model.model_type)
     assert isinstance(test_pi05.model, Pi05), "Loaded model should be an instance of Pi05"
-    test_pi05.test_data_transforms()
+    # test_pi05.test_data_transforms()
     
     # test_pi05.test_compute_fast_loss()
-    test_pi05.test_compute_loss()
+    # test_pi05.test_subtask_generation()
+    prefix_out = test_pi05.test_compute_loss()
+    print(prefix_out)
     
 
-
-
+# python decode_tokens.py "255667 255495 573 255649 255649 16616 573 255649 255649 16616 16616 255642 573 16616 573 255649 3124 255495 235248 255616"
+# python decode_tokens.py "7071 235292 4788 908 573 28660 235269 3040 235292 235248 235274 235324 235324 235248 235274 235324 235318 235248 235284 235310"
+# python decode_tokens.py "255667 1 1 573 1 235292 573 573 8277 235292 1 255495 235248 573 573 573 573 255649 255642 573"
+# python decode_tokens.py "18075   908   573 28660   108     0     0     0     0     0     0     0 0     0     0     0     0     0     0     0"
+# python decode_tokens.py "255667    908   3868   3868      1   3351"
     
 
      

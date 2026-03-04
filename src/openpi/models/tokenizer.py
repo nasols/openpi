@@ -60,7 +60,7 @@ class PaligemmaTokenizer:
         cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
         discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
         state_str = " ".join(map(str, discretized_state))
-        full_prompt = f"Task: {cleaned_text}, State: {state_str};\Subtask: "
+        full_prompt = f"Decompose the following task into one subtask. Task: {cleaned_text}, State: {state_str};\Subtask: "
         tokens = self._tokenizer.encode(full_prompt, add_bos=True)
 
         tokens_len = len(tokens)
@@ -73,6 +73,38 @@ class PaligemmaTokenizer:
                 logging.warning(
                     f"Token length ({len(tokens)}) exceeds max length ({self._max_len}), truncating. "
                     "Consider increasing the `max_token_len` in your model config if this happens frequently."
+                )
+            tokens = tokens[: self._max_len]
+            mask = [True] * self._max_len
+
+        return np.asarray(tokens), np.asarray(mask)
+
+    def tokenize_raw_text(self, text: str) -> tuple[np.ndarray, np.ndarray]:
+        """Tokenize raw text WITHOUT BOS or special formatting.
+        
+        Used for teacher forcing where the text will be concatenated to an existing
+        sequence that already has BOS token.
+        
+        Args:
+            text: Raw text to tokenize (e.g., "pick up the cube")
+            
+        Returns:
+            tokens: Token IDs (padded to max_len)
+            mask: Boolean mask indicating valid tokens
+        """
+        cleaned_text = text.strip().replace("_", " ").replace("\n", " ")
+        # Encode WITHOUT add_bos - no special tokens
+        tokens = self._tokenizer.encode(cleaned_text, add_bos=False)
+        
+        tokens_len = len(tokens)
+        if tokens_len < self._max_len:
+            padding = [False] * (self._max_len - tokens_len)
+            mask = [True] * tokens_len + padding
+            tokens = tokens + padding
+        else:
+            if len(tokens) > self._max_len:
+                logging.warning(
+                    f"Token length ({len(tokens)}) exceeds max length ({self._max_len}), truncating."
                 )
             tokens = tokens[: self._max_len]
             mask = [True] * self._max_len
