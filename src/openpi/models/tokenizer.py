@@ -16,8 +16,8 @@ class PaligemmaTokenizer:
     def __init__(self, max_len: int = 48):
         self._max_len = max_len
 
-        print("\n[DEBUG] PaligemmaTokenizer.__init__ called. PID:", os.getpid())
-        traceback.print_stack(limit=30)
+        # print("\n[DEBUG] PaligemmaTokenizer.__init__ called. PID:", os.getpid())
+        # traceback.print_stack(limit=30)
 
         path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
         with path.open("rb") as f:
@@ -50,6 +50,71 @@ class PaligemmaTokenizer:
             mask = [True] * self._max_len
 
         return np.asarray(tokens), np.asarray(mask)
+    
+    def tokenize_subtask(self, prompt:str, state:np.ndarray) -> tuple[np.ndarray, np.ndarray]: 
+
+        assert isinstance(prompt, str), f"Expected prompt to be a string, got {type(prompt)}"
+        assert state is not None, "State cannot be None for subtask tokenization --> Only supports Pi05"
+        assert isinstance(state, np.ndarray), f"Expected state to be a numpy array, got {type(state)}"
+
+        cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
+        discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+        state_str = " ".join(map(str, discretized_state))
+        full_prompt = f"Decompose the following task into one subtask. Task: {cleaned_text}, State: {state_str};\Subtask: "
+        tokens = self._tokenizer.encode(full_prompt, add_bos=True)
+
+        tokens_len = len(tokens)
+        if tokens_len < self._max_len:
+            padding = [False] * (self._max_len - tokens_len)
+            mask = [True] * tokens_len + padding
+            tokens = tokens + padding
+        else:
+            if len(tokens) > self._max_len:
+                logging.warning(
+                    f"Token length ({len(tokens)}) exceeds max length ({self._max_len}), truncating. "
+                    "Consider increasing the `max_token_len` in your model config if this happens frequently."
+                )
+            tokens = tokens[: self._max_len]
+            mask = [True] * self._max_len
+
+        return np.asarray(tokens), np.asarray(mask)
+
+    def tokenize_raw_text(self, text: str) -> tuple[np.ndarray, np.ndarray]:
+        """Tokenize raw text WITHOUT BOS or special formatting.
+        
+        Used for teacher forcing where the text will be concatenated to an existing
+        sequence that already has BOS token.
+        
+        Args:
+            text: Raw text to tokenize (e.g., "pick up the cube")
+            
+        Returns:
+            tokens: Token IDs (padded to max_len)
+            mask: Boolean mask indicating valid tokens
+        """
+        cleaned_text = text.strip().replace("_", " ").replace("\n", " ")
+        # Encode WITHOUT add_bos - no special tokens
+        tokens = self._tokenizer.encode(cleaned_text, add_bos=False)
+        
+        tokens_len = len(tokens)
+        if tokens_len < self._max_len:
+            padding = [False] * (self._max_len - tokens_len)
+            mask = [True] * tokens_len + padding
+            tokens = tokens + padding
+        else:
+            if len(tokens) > self._max_len:
+                logging.warning(
+                    f"Token length ({len(tokens)}) exceeds max length ({self._max_len}), truncating."
+                )
+            tokens = tokens[: self._max_len]
+            mask = [True] * self._max_len
+
+        return np.asarray(tokens), np.asarray(mask)
+    
+    def decode(self, tokens: np.ndarray) -> str:
+        # Decode tokens to text
+        decoded_text = self._tokenizer.decode(tokens.tolist())
+        return decoded_text
 
 
 class FASTTokenizer:

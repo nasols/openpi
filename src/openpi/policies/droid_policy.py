@@ -45,7 +45,7 @@ class DroidInputs(transforms.DataTransformFn):
         wrist_image = _parse_image(data["observation/wrist_image_left"])
 
         match self.model_type:
-            case _model.ModelType.PI0 | _model.ModelType.PI05 | _model.ModelType.PI05_KI:
+            case _model.ModelType.PI0 | _model.ModelType.PI05 | _model.ModelType.PI05_KI | _model.ModelType.PI05_HI:
                 names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
                 images = (base_image, wrist_image, np.zeros_like(base_image))
                 image_masks = (np.True_, np.True_, np.False_)
@@ -65,6 +65,11 @@ class DroidInputs(transforms.DataTransformFn):
 
         if "actions" in data:
             inputs["actions"] = np.asarray(data["actions"])
+
+        if "subtask" in data:
+            if isinstance(data["subtask"], bytes):
+                data["subtask"] = data["subtask"].decode("utf-8")
+            inputs["subtask"] = data["subtask"]
 
         if "prompt" in data:
             if isinstance(data["prompt"], bytes):

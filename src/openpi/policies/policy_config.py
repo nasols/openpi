@@ -24,12 +24,6 @@ def create_trained_policy(
     default_prompt: str | None = None,
     norm_stats: dict[str, transforms.NormStats] | None = None,
     pytorch_device: str | None = None,
-    hierarchical_mode: bool = False,
-    subtask_template: str | None = None,
-    subtask_refresh_steps: int = 10,
-    completion_check_mode: str = "step_count",
-    completion_threshold: float = 0.75,
-    min_steps_per_subtask: int = 3,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -79,6 +73,10 @@ def create_trained_policy(
         model.knowledge_insulation = True
         logger.log(level=103, msg="Enabling knowledge insulation in the trained policy.")
     
+    if train_config.hierarchical_mode:
+        logger.log(level=103, msg="Enabling hierarchical mode in the trained policy.")
+        model.hierarchical_mode = True
+
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
@@ -118,15 +116,10 @@ def create_trained_policy(
         metadata=train_config.policy_metadata,
         is_pytorch=is_pytorch,
         pytorch_device=pytorch_device if is_pytorch else None,
-        hierarchical_mode=hierarchical_mode,
-        subtask_template=subtask_template,
-        subtask_refresh_steps=subtask_refresh_steps,
-        completion_check_mode=completion_check_mode,
-        completion_threshold=completion_threshold,
-        min_steps_per_subtask=min_steps_per_subtask,
+        hierarchical_mode=train_config.hierarchical_mode,
     )
     
-    if hierarchical_mode:
-        logger.log(level=103, msg=f"[HI-Robot] Hierarchical planning enabled (refresh every {subtask_refresh_steps} steps)")
+    if train_config.hierarchical_mode:
+        logger.log(level=103, msg=f"[HI-Robot] Hierarchical planning enabled ")
     
     return policy

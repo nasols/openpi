@@ -182,7 +182,7 @@ class Pi0(_model.BaseModel):
         # embed images
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
-
+            logger.log(level=103, msg=f"Image '{name}' tokens shape: {image_tokens.shape}")
             tokens.append(image_tokens)
             input_mask.append(
                 einops.repeat(
@@ -197,6 +197,7 @@ class Pi0(_model.BaseModel):
         # add language (aka tokenized inputs)
         if obs.tokenized_prompt is not None:
             tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
+            logger.log(level=103, msg=f"Tokenized prompt tokens shape: {tokenized_inputs.shape}")
             tokens.append(tokenized_inputs)
             input_mask.append(obs.tokenized_prompt_mask)
             # full attention between image and language inputs
@@ -290,8 +291,14 @@ class Pi0(_model.BaseModel):
             
             logger.log(level=103, msg="[DEBUG] Running KI loss-computation (memory-optimized)")
             
-            ## PART ONE: FAST LOSS - Compute VLM forward and cache results
+            #############################################################################
+            ######## PART ONE: FAST LOSS - Compute VLM forward and cache results ########
+            #############################################################################
+
             prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+            logger.log(level=103, msg=f"Prefix tokens shape: {prefix_tokens.shape}")
+            logger.log(level=103, msg=f"Prefix mask shape: {prefix_mask.shape}")
+            logger.log(level=103, msg=f"Prefix ar mask shape: {prefix_ar_mask.shape}")
             # prefix attention mask. Separates the image+prompt+state tokens into a bi-directional block 
             ## and the FAST tokens into an autoregressive block.
             prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask) 
@@ -307,8 +314,13 @@ class Pi0(_model.BaseModel):
             
             # Compute FAST loss (gradients flow to VLM parameters)
             FAST_loss = self.compute_fast_loss(prefix_out_FAST, observation) 
-            
-            ## PART TWO: ACTION LOSS - Reuse KV cache to avoid recomputing VLM
+
+            logger.log(level=103, msg=f"[DEBUG] FAST loss computed: {FAST_loss}")
+
+            #############################################################################
+            ###### PART TWO: ACTION LOSS - Reuse KV cache to avoid recomputing VLM ######
+            #############################################################################
+
             # Stop gradients on KV cache to prevent action loss from updating VLM
             kv_cache_detached = jax.tree.map(jax.lax.stop_gradient, kv_cache)
             
@@ -318,6 +330,7 @@ class Pi0(_model.BaseModel):
             # Create attention masks for suffix tokens
             # suffix_attn_mask: how suffix tokens attend to each other
             suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            
             # prefix_attn_mask: how suffix tokens can attend to cached prefix
             prefix_attn_mask_for_suffix = einops.repeat(
                 prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1]
@@ -340,7 +353,7 @@ class Pi0(_model.BaseModel):
 
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
             continuous_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
-            
+            logger.log(level=103, msg=f"[DEBUG] Continuous action loss computed: {jnp.mean(continuous_loss)}")
             # Combined loss: both components contribute to final loss
             total_loss = continuous_loss + self.ki_fast_loss_weight * FAST_loss
             return total_loss
@@ -411,77 +424,90 @@ class Pi0(_model.BaseModel):
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
 
-    # [TODO] Current implementation runs an error due to the tokenizer being instansiated twice, once in data transforms pipeline and a second time in the Pi0 model instance. 
-    # JAX only accepts one instance so either find a workaround using the data pipeline tokenizer or something else to be able to run HI-Robot
-    # This todo is only affecting the HI-Robot part of the pipeline. Maybe not even crucial for training. 
-
-    # @at.typecheck
-    # def generate_subtask(self, observation: _model.Observation, original_prompt: str, max_tokens: int = 5) -> str: 
-    #     """Generate subtask using autoregressive text generation.
+    @at.typecheck
+    def generate_subtask(
+        self, 
+        rng: at.KeyArrayLike,
+        observation: _model.Observation, 
+        original_prompt: str, 
+        max_tokens: int = 20,
+        temperature: float = 0.7,
+    ) -> str: 
+        """Generate subtask using VLM autoregressive text generation.
         
-    #     Args:
-    #         observation: Preprocessed observation with images and tokenized prompt
-    #         original_prompt: The original goal/prompt text
-    #         max_tokens: Maximum number of tokens to generate
-            
-    #     Returns:
-    #         Generated subtask text
-    #     """
+        This method passes the observation through the VLM to decompose the 
+        high-level task into a more specific sub-task. It uses greedy decoding
+        to generate tokens autoregressively.
         
-    #     subtask_prompt = "You are tasked with decomposing the following goal into a sub-task. Take the overarching goal and give back a sub-task. Here is the task: \n Task: {prompt}; \n Sub-task: "
-    #     subtask_prompt = subtask_prompt.format(prompt=original_prompt)
-
-    #     # Get initial prefix embeddings (images + prompt)
-    #     prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        Args:
+            rng: Random key for sampling (if using temperature > 0)
+            observation: Preprocessed observation with images and tokenized prompt
+            original_prompt: The original high-level goal/prompt text
+            max_tokens: Maximum number of tokens to generate for the subtask
+            temperature: Sampling temperature (0 = greedy, >0 = stochastic)
+            
+        Returns:
+            Generated subtask text (token IDs as they need external decoding)
+        """
         
-    #     embedding_table = self.PaliGemma.llm.embedder["input_embedding"]
-    #     generated_tokens = []
+        logger.log(level=103, msg=f"[HI-Robot] Generating subtask for prompt: {original_prompt}")
         
-    #     # Autoregressive generation loop
-    #     for step in range(max_tokens):
-    #         # Create attention mask for current sequence
-    #         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
-    #         position = jnp.cumsum(prefix_mask, axis=1) - 1
+        # Get initial prefix embeddings (images + decomposition prompt)
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        
+        # Extract embedding table from VLM for decoding logits to tokens
+        embedding_table = self.PaliGemma.llm.embedder["input_embedding"]
+        generated_token_ids = []
+        
+        # Autoregressive generation loop - iteratively predict next token
+        for step in range(max_tokens):
+            # Create attention mask for current sequence
+            prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+            positions = jnp.cumsum(prefix_mask, axis=1) - 1
             
-    #         # Forward pass through VLM
-    #         (prefix_out, _), _ = self.PaliGemma.llm(
-    #             [prefix_tokens, None],
-    #             mask=prefix_attn_mask,
-    #             positions=position,
-    #         )
+            # Forward pass through VLM (only vision-language expert, no action expert)
+            (prefix_out, _), _ = self.PaliGemma.llm(
+                [prefix_tokens, None],  # None for action expert
+                mask=prefix_attn_mask,
+                positions=positions,
+            )
             
-    #         # Get logits for the LAST position (which predicts the next token)
-    #         last_embedding = prefix_out[:, -1:, :]  # Shape: (batch, 1, emb_dim)
-    #         logits = jnp.dot(last_embedding, embedding_table.T)  # Shape: (batch, 1, vocab_size)
+            # Decode last hidden state to vocabulary logits
+            last_embedding = prefix_out[:, -1:, :]  # Shape: (batch, 1, emb_dim)
+            logits = jnp.einsum('bte,ve->btv', last_embedding, embedding_table)  # (batch, 1, vocab_size)
             
-    #         # Greedy decoding - take most likely token
-    #         next_token_id = jnp.argmax(logits[0, 0])  # Scalar token ID
-    #         logger.log(level=103, msg=f"[HI-Robot] Step {step}: Generated token ID {next_token_id}")
-    #         logger.log(level=103, msg=f"[HI-Robot] Step {step}: Logits {logits}, {logits.shape}")
-    #         # Check for EOS token or newline to stop generation
-    #         # if next_token_id == 1 or next_token_id == 2:  # EOS or padding
-    #         #     break
+            # Sample or greedily select next token
+            if temperature > 0:
+                rng, sample_rng = jax.random.split(rng)
+                next_token_id = jax.random.categorical(
+                    sample_rng, logits[0, 0] / temperature
+                )
+            else:
+                # Greedy decoding
+                next_token_id = jnp.argmax(logits[0, 0])
+            
+            next_token_id = int(next_token_id)
+            
+            # Check for EOS token (1) or newline (108) to stop generation early
+            if next_token_id == 1:
+                logger.log(level=103, msg=f"[HI-Robot] EOS token reached at step {step}")
+                break
                 
-    #         generated_tokens.append(int(next_token_id))
+            generated_token_ids.append(next_token_id)
+            logger.log(level=103, msg=f"[HI-Robot] Step {step}: Generated token ID {next_token_id}")
             
-    #         # Embed the new token and append to prefix for next iteration
-    #         next_token_embedding = self.PaliGemma.llm(
-    #             jnp.array([[next_token_id]]), method="embed"
-    #         )  # Shape: (1, 1, emb_dim)
+            # Embed the new token and append to sequence for next iteration
+            next_token_embedding = self.PaliGemma.llm(
+                jnp.array([[next_token_id]]), method="embed"
+            )  # Shape: (1, 1, emb_dim)
             
-    #         # Append to sequence
-    #         prefix_tokens = jnp.concatenate([prefix_tokens, next_token_embedding], axis=1)
-    #         prefix_mask = jnp.concatenate([prefix_mask, jnp.ones((1, 1), dtype=jnp.bool_)], axis=1)
-    #         prefix_ar_mask = jnp.concatenate([prefix_ar_mask, jnp.array([False])])  # Causal attention for generated tokens
+            # Extend the sequence
+            prefix_tokens = jnp.concatenate([prefix_tokens, next_token_embedding], axis=1)
+            prefix_mask = jnp.concatenate([prefix_mask, jnp.ones((1, 1), dtype=jnp.bool_)], axis=1)
+            prefix_ar_mask = jnp.concatenate([prefix_ar_mask, jnp.array([False])])  # Causal for generated
         
-    #     # Decode generated tokens to text
-    #     if generated_tokens:
-    #         subtask_text = self.tokenizer._tokenizer.decode(generated_tokens)
-    #     else:
-    #         subtask_text = ""
+        logger.log(level=103, msg=f"[HI-Robot] Generated token IDs: {generated_token_ids}")
         
-    #     logger.log(level=103, msg=f"[HI-Robot] Generated subtask text: {subtask_text}")
-    #     logger.log(level=103, msg=f"[HI-Robot] Generated token IDs: {generated_tokens}")
-        
-    #     return subtask_prompt + " " + subtask_text.strip()
+        # Return token IDs - decoding happens externally in policy layer with its tokenizer
+        return generated_token_ids
 

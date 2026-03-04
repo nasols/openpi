@@ -15,6 +15,7 @@ import tyro
 
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
+import openpi.models.pi05_config as pi05_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
@@ -62,9 +63,23 @@ class AssetsConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotDatasetConfig:
+    """Configuration for a single LeRobot dataset in a mixed dataset setup."""
+    # The LeRobot repo id.
+    repo_id: str
+    # Sampling weight for this dataset (higher weight = more samples from this dataset).
+    # If not specified, defaults to 1.0.
+    weight: float = 1.0
+
+
+@dataclasses.dataclass(frozen=True)
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
+    # If repo_ids is specified, this should be None.
     repo_id: str | None = None
+    # List of dataset configurations for mixed dataset training.
+    # If specified, repo_id should be None.
+    repo_ids: Sequence[LeRobotDatasetConfig] | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -124,7 +139,7 @@ class ModelTransformFactory(GroupFactory):
                     ],
                 )
             case _model.ModelType.PI05:
-                assert isinstance(model_config, pi0_config.Pi0Config)
+                assert isinstance(model_config, pi05_config.Pi05Config)
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
@@ -137,7 +152,7 @@ class ModelTransformFactory(GroupFactory):
                     ],
                 )
             case _model.ModelType.PI05_KI:
-                assert isinstance(model_config, pi0_config.Pi0Config)
+                assert isinstance(model_config, pi05_config.Pi05Config)
                 tokenizer_cls = _tokenizer.FASTTokenizer
                    
                 return _transforms.Group(
@@ -156,6 +171,21 @@ class ModelTransformFactory(GroupFactory):
                     # No output transform needed - KI model outputs actions directly
                     # (uses FAST tokens + action expert internally)
                 )
+            
+            case _model.ModelType.PI05_HI: 
+                assert isinstance(model_config, pi05_config.Pi05Config)
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizeHierarchicalPrompt(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                        ),
+                        _transforms.PadStatesAndActions(model_config.action_dim),
+                    ],
+                    outputs=[]
+                )
+
             case _model.ModelType.PI0_FAST:
                 tokenizer_cls = (
                     _tokenizer.FASTTokenizer
@@ -185,8 +215,11 @@ class ModelTransformFactory(GroupFactory):
 
 @dataclasses.dataclass(frozen=True)
 class DataConfigFactory(abc.ABC):
-    # The LeRobot repo id.
-    repo_id: str = tyro.MISSING
+    # The LeRobot repo id. Can be a single string or None if using repo_ids.
+    repo_id: str | None = tyro.MISSING
+    # List of dataset configurations for mixed dataset training.
+    # If specified, repo_id will be ignored.
+    repo_ids: Sequence[LeRobotDatasetConfig] | None = None
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -197,11 +230,21 @@ class DataConfigFactory(abc.ABC):
         """Create a data config."""
 
     def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
-        asset_id = self.assets.asset_id or repo_id
+        # Determine repo_id: use repo_ids if available, otherwise use repo_id
+        if self.repo_ids is not None:
+            # Mixed dataset mode: repo_id will be None, and repo_ids will be set
+            repo_id = None
+            dataset_configs = self.repo_ids
+        else:
+            # Single dataset mode
+            repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
+            dataset_configs = None
+        
+        asset_id = self.assets.asset_id or (repo_id if isinstance(repo_id, str) else None)
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
+            repo_ids=dataset_configs,
             asset_id=asset_id,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
             use_quantile_norm=model_config.model_type != ModelType.PI0,
@@ -222,7 +265,7 @@ class DataConfigFactory(abc.ABC):
 
 @dataclasses.dataclass(frozen=True)
 class FakeDataConfig(DataConfigFactory):
-    repo_id: str = "fake"
+    repo_id: str | None = "fake"
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -463,6 +506,7 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
                         "observation/gripper_position": "gripper_position",
                         "actions": "actions",
                         "prompt": "prompt",
+                        "subtask": "subtask",
                     }
                 )
             ]
@@ -558,6 +602,10 @@ class TrainConfig:
     knowledge_insulation_lambda: float = 1.0
     knowledge_insulation : bool = False
 
+    # Hierarchical policy settings
+    hierarchical_mode : bool = False 
+    
+
     @property
     def assets_dirs(self) -> pathlib.Path:
         """Get the assets directory for this config."""
@@ -574,7 +622,7 @@ class TrainConfig:
     def trainable_filter(self) -> nnx.filterlib.Filter:
         """Get the filter for the trainable parameters."""
         return nnx.All(nnx.Param, nnx.Not(self.freeze_filter))
-
+    
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
@@ -921,10 +969,9 @@ _CONFIGS = [
         # Here, we use LeRobot data format (like for all other fine-tuning examples)
         # To convert your custom DROID dataset (<10s of hours) to LeRobot format, see examples/droid/convert_droid_data_to_lerobot.py
         name="pi05_droid_finetune",
-        model=pi0_config.Pi0Config(
-            pi05=True,
+        model=pi05_config.Pi05Config(
             action_dim=32,  # pi05 is trained with 32-dim actions
-            action_horizon=16,
+            action_horizon=15,
         ),
         data=LeRobotDROIDDataConfig(
             # Replace with your custom DROID LeRobot dataset repo id.
@@ -946,8 +993,7 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi05_droid_ki",
-        model=pi0_config.Pi0Config(
-            pi05=True, 
+        model=pi05_config.Pi05Config(
             action_dim=32,
             action_horizon=15, 
             knowledge_insulation=True),
@@ -968,6 +1014,64 @@ _CONFIGS = [
         fsdp_devices=2,
 
         knowledge_insulation=True,
+    ),
+    TrainConfig(
+        name="pi05_droid_hi",
+        model=pi05_config.Pi05Config(
+            action_dim=32,
+            action_horizon=15, 
+            knowledge_insulation=False, 
+            hierarchical_mode=True),
+        data=LeRobotDROIDDataConfig(
+            repo_id="lerobot_pickupcube",
+            base_config=DataConfig(prompt_from_task=True), 
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                asset_id="droid"
+            )
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        num_train_steps=2000 + 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
+        save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
+        log_interval=100,
+        # keep_period=2000,
+        batch_size=32,
+        fsdp_devices=2,
+        hierarchical_mode=True,
+
+        knowledge_insulation=False,
+    ),
+    TrainConfig(
+        # Example config demonstrating how to train on a mixture of multiple DROID datasets.
+        # This allows combining data from different tasks or environments with configurable sampling weights.
+        # See docs/mixed_datasets.md for more details.
+        name="pi05_droid_mixed_example",
+        model=pi05_config.Pi05Config(
+            action_dim=32,
+            action_horizon=15,
+        ),
+        data=LeRobotDROIDDataConfig(
+            # Use repo_ids instead of repo_id to specify multiple datasets
+            repo_ids=[
+                # Each dataset can have a different sampling weight
+                # Higher weight = more samples from this dataset during training
+                LeRobotDatasetConfig(repo_id="your_username/droid_dataset1", weight=1.0),
+                LeRobotDatasetConfig(repo_id="your_username/droid_dataset2", weight=2.0),  # Sampled 2x more
+                LeRobotDatasetConfig(repo_id="your_username/droid_dataset3", weight=1.0),
+            ],
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                # Important: use the same normalization stats for all datasets
+                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                asset_id="droid",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        num_train_steps=2000,
+        save_interval=1000,
+        log_interval=100,
+        batch_size=32,
+        fsdp_devices=2,
     ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
@@ -990,12 +1094,13 @@ _CONFIGS = [
         name="debug",
         data=FakeDataConfig(),
         batch_size=2,
-        model=pi0_config.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy"),
+        model=pi0_config.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy", knowledge_insulation=False),
         save_interval=100,
         overwrite=True,
         exp_name="debug",
         num_train_steps=10,
         wandb_enabled=False,
+        knowledge_insulation = False,
     ),
     TrainConfig(
         name="debug_ki",
@@ -1053,3 +1158,33 @@ def get_config(config_name: str) -> TrainConfig:
         raise ValueError(f"Config '{config_name}' not found.{closest_str}")
 
     return _CONFIGS_DICT[config_name]
+
+@dataclasses.dataclass(frozen=True)
+class PolicyConfig: # Can be expanded with KI and HI pipelines 
+    config_name : str
+    exp_name: str = None
+
+    @property
+    def get_checkpoint_dir(self): 
+        if self.exp_name is not None: 
+            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/").resolve()
+        else: 
+            return f"gs://openpi-assets/checkpoints/{self.config_name}"
+    @property
+    def get_assets_dir(self): 
+        return pathlib.Path(f"")
+
+    @property
+    def get_training_config(self): 
+        return get_config(self.config_name)
+
+def get_policy_config(config_name:str, exp_name:str|None=None) : 
+
+    pc = PolicyConfig(
+        config_name=config_name, 
+        exp_name=exp_name)
+
+    return pc
+
+
+

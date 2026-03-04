@@ -21,6 +21,8 @@ from openpi import transforms as _transforms
 from openpi.models import model as _model
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
+from openpi.models import tokenizer as _tokenizer
+from openpi.models.pi05 import Pi05
 
 import copy
 
@@ -40,11 +42,7 @@ class Policy(BasePolicy):
         pytorch_device: str = "cpu",
         is_pytorch: bool = False,
         hierarchical_mode: bool = False,
-        subtask_template: str | None = None,
-        subtask_refresh_steps: int = 10,
-        completion_check_mode: str = "step_count",
-        completion_threshold: float = 0.75,
-        min_steps_per_subtask: int = 3,
+  
     ):
         """Initialize the Policy.
 
@@ -59,13 +57,6 @@ class Policy(BasePolicy):
                           Only relevant when is_pytorch=True.
             is_pytorch: Whether the model is a PyTorch model. If False, assumes JAX model.
             hierarchical_mode: If True, use hierarchical planning (HI-robot style).
-            subtask_template: Template for generating subtasks. Use {prompt} for original goal.
-            subtask_refresh_steps: Regenerate subtask every N steps (only used if completion_check_mode="step_count").
-            completion_check_mode: How to check subtask completion:
-                - "step_count": Refresh after fixed number of steps (simple, fast)
-                - "visual_similarity": Use CLIP/vision encoder to check if subtask looks complete (adaptive)
-            completion_threshold: For visual_similarity mode, similarity score above this triggers new subtask (0-1).
-            min_steps_per_subtask: Minimum steps before checking completion (avoid premature subtask changes).
         """
         self._model = model
         self._input_transform = _transforms.compose(transforms)
@@ -77,14 +68,11 @@ class Policy(BasePolicy):
         
         # Hierarchical planning state
         self._hierarchical_mode = hierarchical_mode
-        self._subtask_template = subtask_template or "Goal: {prompt}; \n Sub-task:"
-        self._subtask_refresh_steps = subtask_refresh_steps
-        self._completion_check_mode = completion_check_mode
-        self._completion_threshold = completion_threshold
-        self._min_steps_per_subtask = min_steps_per_subtask
         self._current_subtask = None
-        self._original_prompt = None
-        self._step_count = 0
+        self._original_prompt = None                                    
+
+        if self._hierarchical_mode: 
+            self._tokenizer = _tokenizer.PaligemmaTokenizer(max_len=model.max_token_len) 
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -149,39 +137,6 @@ class Policy(BasePolicy):
     @property
     def metadata(self) -> dict[str, Any]:
         return self._metadata
-    
-    # def _generate_subtask(self, observation: dict) -> str:
-    #     """Generate next subtask using the model's text generation."""
-    #     # Create subtask generation prompt
-    #     subtask_prompt = self._subtask_template.format(prompt=self._original_prompt)
-
-    #     inputs = jax.tree.map(lambda x: x, observation)
-    #     inputs = self._input_transform(inputs)
-    #     inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
-    #     sample_rng_or_pytorch_device = self._pytorch_device
-    #     observation = _model.Observation.from_dict(inputs)
-    #     observation = _model.preprocess_observation(sample_rng_or_pytorch_device, observation, train=True)
-        
-    #     # Using the VLM and the sub-task prompt template, we generate the desired sub-task. 
-    #     prefix_tokens, prefix_mask, prefix_ar_mask = self._model.embed_prefix(observation)
-    #     # prefix attention mask. Separates the image+prompt+state tokens into a bi-directional block 
-        
-    #     prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask) 
-    #     # Positions makes the blocks for the attention mechanism. 
-    #     # Meaning all tokens of lower index can be attended to. Something like that. 
-    #     position = jnp.cumsum(prefix_mask, axis=1) - 1 
-        
-    #     # Runs a forward pass through the VLM only to autoregressively predict FAST tokens. 
-    #     (prefix_out, _), _ = self._model.PaliGemma.llm(
-    #         [prefix_tokens, None], # Only running VLM
-    #         mask=prefix_attn_mask,
-    #         positions=position,
-    #     ) 
-
-    #     # Decode output tokens into text. 
-    #     subtask = self._model.PaliGemma.tokenizer.decode(prefix_out[0, -1, :], skip_special_tokens=True)
-    #     return self._subtask_template.format(prompt=self._original_prompt) + " " + subtask.strip()
-
 
 
 
