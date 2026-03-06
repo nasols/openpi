@@ -779,7 +779,8 @@ class Pi05(_model.BaseModel):
             # Update prefix_out for next iteration
             prefix_out = new_out
         
-        logger.log(level=103, msg=f"[HI-Robot] Generated {len(generated_tokens)} tokens: {generated_tokens}")
-        
-        return generated_tokens
+        # logger.log(level=103, msg=f"[HI-Robot] Generated {len(generated_tokens)} tokens: {generated_tokens}")
+        generated_tokens = generated_tokens + [0] * (max_tokens - len(generated_tokens))  # Pad to max_tokens with zeros
+        generated_tokens_mask = [True] * len(generated_tokens) + [False] * (max_tokens - len(generated_tokens))
+        return generated_tokens, generated_tokens_mask
 
