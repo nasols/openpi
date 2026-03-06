@@ -506,6 +506,45 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
                         "observation/gripper_position": "gripper_position",
                         "actions": "actions",
                         "prompt": "prompt",
+                        # "subtask": "subtask",
+                    }
+                )
+            ]
+        )
+        # We assume joint *velocity* actions, so we should *not* apply an additional delta transform.
+        data_transforms = _transforms.Group(
+            inputs=[droid_policy.DroidInputs(model_type=model_config.model_type)],
+            outputs=[droid_policy.DroidOutputs()],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+@dataclasses.dataclass(frozen=True)
+class HiRobotLeRobotDROIDDataConfig(DataConfigFactory):
+    """
+    Dataconfig used in the hierarchical training setup for DROID.
+    We need the subtask field to train the VLM in subtask prediction. 
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/exterior_image_1_left": "exterior_image_1_left",
+                        #"observation/exterior_image_2_left": "exterior_image_2_left",
+                        "observation/wrist_image_left": "wrist_image_left",
+                        "observation/joint_position": "joint_position",
+                        "observation/gripper_position": "gripper_position",
+                        "actions": "actions",
+                        "prompt": "prompt",
                         "subtask": "subtask",
                     }
                 )
@@ -973,6 +1012,23 @@ _CONFIGS = [
             action_dim=32,  # pi05 is trained with 32-dim actions
             action_horizon=15,
         ),
+
+        # data=LeRobotDROIDDataConfig(
+        #     # Use repo_ids instead of repo_id to specify multiple datasets
+        #     repo_ids=[
+        #         # Each dataset can have a different sampling weight
+        #         # Higher weight = more samples from this dataset during training
+        #         LeRobotDatasetConfig(repo_id="lerobot_pickupcube", weight=1.0),
+        #         LeRobotDatasetConfig(repo_id="lerobot_pickandplace", weight=1.0), 
+        #     ],
+        #     base_config=DataConfig(prompt_from_task=True),
+        #     assets=AssetsConfig(
+        #         # Important: use the same normalization stats for all datasets
+        #         assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+        #         asset_id="droid",
+        #     ),
+        # ),
+        
         data=LeRobotDROIDDataConfig(
             # Replace with your custom DROID LeRobot dataset repo id.
             repo_id="lerobot_pickupcube",
@@ -980,11 +1036,13 @@ _CONFIGS = [
             assets=AssetsConfig(
                 # Important: reuse the original DROID norm stats during fine-tuning!
                 assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                # assets_dir="./checkpoints/pi05_droid_finetune/test_base_01/2099/assets",
                 asset_id="droid",
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
-        num_train_steps=2000 + 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
+        #weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi05_droid_finetune/test_base_01/2099/params"),
+        num_train_steps=2000, #+ 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
         save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
         log_interval=100,
         # keep_period=2000,
@@ -1022,7 +1080,7 @@ _CONFIGS = [
             action_horizon=15, 
             knowledge_insulation=False, 
             hierarchical_mode=True),
-        data=LeRobotDROIDDataConfig(
+        data=HiRobotLeRobotDROIDDataConfig(
             repo_id="lerobot_pickupcube",
             base_config=DataConfig(prompt_from_task=True), 
             assets=AssetsConfig(
@@ -1045,7 +1103,7 @@ _CONFIGS = [
         # Example config demonstrating how to train on a mixture of multiple DROID datasets.
         # This allows combining data from different tasks or environments with configurable sampling weights.
         # See docs/mixed_datasets.md for more details.
-        name="pi05_droid_mixed_example",
+        name="pi05_droid_mixed",
         model=pi05_config.Pi05Config(
             action_dim=32,
             action_horizon=15,
@@ -1055,9 +1113,9 @@ _CONFIGS = [
             repo_ids=[
                 # Each dataset can have a different sampling weight
                 # Higher weight = more samples from this dataset during training
-                LeRobotDatasetConfig(repo_id="your_username/droid_dataset1", weight=1.0),
-                LeRobotDatasetConfig(repo_id="your_username/droid_dataset2", weight=2.0),  # Sampled 2x more
-                LeRobotDatasetConfig(repo_id="your_username/droid_dataset3", weight=1.0),
+                LeRobotDatasetConfig(repo_id="lerobot_pickupcube", weight=1.0),
+                LeRobotDatasetConfig(repo_id="lerobot_pickandplace", weight=1.0),  # Sampled 2x more
+                
             ],
             base_config=DataConfig(prompt_from_task=True),
             assets=AssetsConfig(

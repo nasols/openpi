@@ -49,7 +49,7 @@ class TestPI05:
         self.load_policy()
 
     def load_policy(self): 
-        self.config = _config.get_config("pi05_droid_ki")  # Test KI mode
+        self.config = _config.get_config("pi05_droid_mixed")  # Test KI mode
         checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
         self.policy = policy_config.create_trained_policy(self.config, checkpoint_dir)
         self.model : Pi05 = self.policy._model
