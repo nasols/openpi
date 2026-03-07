@@ -1013,6 +1013,52 @@ _CONFIGS = [
             action_horizon=15,
         ),
 
+        data=LeRobotDROIDDataConfig(
+            # Use repo_ids instead of repo_id to specify multiple datasets
+            repo_ids=[
+                # Each dataset can have a different sampling weight
+                # Higher weight = more samples from this dataset during training
+                LeRobotDatasetConfig(repo_id="lerobot_pickupcube", weight=1.0),
+                LeRobotDatasetConfig(repo_id="lerobot_pickandplace", weight=1.0), 
+            ],
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                # Important: use the same normalization stats for all datasets
+                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                asset_id="droid",
+            ),
+        ),
+        
+        # data=LeRobotDROIDDataConfig(
+        #     # Replace with your custom DROID LeRobot dataset repo id.
+        #     repo_id="lerobot_pickupcube",
+        #     base_config=DataConfig(prompt_from_task=True),
+        #     assets=AssetsConfig(
+        #         # Important: reuse the original DROID norm stats during fine-tuning!
+        #         assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+        #         # assets_dir="./checkpoints/pi05_droid_finetune/test_base_01/2099/assets",
+        #         asset_id="droid",
+        #     ),
+        # ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        #weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi05_droid_finetune/test_base_01/2099/params"),
+        num_train_steps=3000, #+ 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
+        save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
+        log_interval=100,
+        # keep_period=2000,
+        batch_size=32,
+        fsdp_devices=2,
+    ),
+    TrainConfig(
+        # This config is for fine-tuning pi05-DROID on a custom (smaller) DROID dataset.
+        # Here, we use LeRobot data format (like for all other fine-tuning examples)
+        # To convert your custom DROID dataset (<10s of hours) to LeRobot format, see examples/droid/convert_droid_data_to_lerobot.py
+        name="pi05_droid_finetune_02",
+        model=pi05_config.Pi05Config(
+            action_dim=32,  # pi05 is trained with 32-dim actions
+            action_horizon=15,
+        ),
+
         # data=LeRobotDROIDDataConfig(
         #     # Use repo_ids instead of repo_id to specify multiple datasets
         #     repo_ids=[
@@ -1031,18 +1077,18 @@ _CONFIGS = [
         
         data=LeRobotDROIDDataConfig(
             # Replace with your custom DROID LeRobot dataset repo id.
-            repo_id="lerobot_pickupcube",
+            repo_id="lerobot_pickandplace",
             base_config=DataConfig(prompt_from_task=True),
             assets=AssetsConfig(
                 # Important: reuse the original DROID norm stats during fine-tuning!
-                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
-                # assets_dir="./checkpoints/pi05_droid_finetune/test_base_01/2099/assets",
+                # assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                assets_dir="./checkpoints/pi05_droid_finetune/sequential_01/1999/assets",
                 asset_id="droid",
             ),
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
-        #weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi05_droid_finetune/test_base_01/2099/params"),
-        num_train_steps=2000, #+ 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
+        # weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi05_droid_finetune/sequential_01/1999/params"),
+        num_train_steps=3000, #+ 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
         save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
         log_interval=100,
         # keep_period=2000,
