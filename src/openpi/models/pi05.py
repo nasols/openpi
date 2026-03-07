@@ -688,7 +688,7 @@ class Pi05(_model.BaseModel):
         original_prompt: str | None = None, 
         max_tokens: int = 20,
         temperature: float = 0.7,
-        ) -> list[int]: 
+        ) -> tuple[list[int], list[bool]]: 
         """Generate subtask tokens using VLM autoregressive generation with KV caching.
         
         NOTE: The observation should contain the decomposition prompt already tokenized.
@@ -705,6 +705,7 @@ class Pi05(_model.BaseModel):
             
         Returns:
             List of generated token IDs (not including prompt tokens)
+            List of boolean values indicating whether each generated token is a subtask token
         """
         if original_prompt is not None:
             logger.log(level=103, msg=f"[HI-Robot] Generating subtask for prompt: {original_prompt}")
@@ -780,7 +781,7 @@ class Pi05(_model.BaseModel):
             prefix_out = new_out
         
         # logger.log(level=103, msg=f"[HI-Robot] Generated {len(generated_tokens)} tokens: {generated_tokens}")
-        generated_tokens = generated_tokens + [0] * (max_tokens - len(generated_tokens))  # Pad to max_tokens with zeros
         generated_tokens_mask = [True] * len(generated_tokens) + [False] * (max_tokens - len(generated_tokens))
+        generated_tokens = generated_tokens + [0] * (max_tokens - len(generated_tokens))  # Pad to max_tokens with zeros
         return generated_tokens, generated_tokens_mask
 

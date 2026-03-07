@@ -29,8 +29,8 @@ def create_torch_dataloader(
     num_workers: int,
     max_frames: int | None = None,
 ) -> tuple[_data_loader.Dataset, int]:
-    if data_config.repo_id is None:
-        raise ValueError("Data config must have a repo_id")
+    if data_config.repo_id is None and data_config.repo_ids is None:
+        raise ValueError("Data config must have a repo_id or repo_ids")
     dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
     dataset = _data_loader.TransformedDataset(
         dataset,

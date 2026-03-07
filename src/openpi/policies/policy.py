@@ -133,9 +133,15 @@ class Policy(BasePolicy):
                 logger.log(level=103, msg=f"[HI-Robot] Generated subtask on step {self._step_count}: {self._current_subtask}")
                 self.step_count = 0
 
-            observation_w_subtask = copy.deepcopy(observation)
-            observation_w_subtask.tokenized_prompt = self._current_subtask
-            observation_w_subtask.tokenized_prompt_mask = self._current_subtask_mask
+            observation_w_subtask = _model.Observation(
+                images=observation.images,
+                image_masks=observation.image_masks,
+                state=observation.state,
+
+                tokenized_prompt=self._current_subtask,
+                tokenized_prompt_mask=self._current_subtask_mask  
+            )
+            
             observation = observation_w_subtask.deepcopy()
         
         ############################

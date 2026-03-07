@@ -12,6 +12,7 @@ from openpi.models.pi05 import Pi05
 from openpi import transforms as _transforms
 from openpi.shared import download
 from openpi.policies import policy_config
+from openpi.training.data_loader import create_torch_dataset
 
 
 
@@ -49,7 +50,7 @@ class TestPI05:
         self.load_policy()
 
     def load_policy(self): 
-        self.config = _config.get_config("pi05_droid_hi")  # Test KI mode
+        self.config = _config.get_config("pi05_droid_mixed")  # Test KI mode
         checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
         self.policy = policy_config.create_trained_policy(self.config, checkpoint_dir)
         self.model : Pi05 = self.policy._model
@@ -229,6 +230,14 @@ class TestPI05:
         result = self.policy.infer(dummy)
 
         return result
+
+    def test_mixed_training(self): 
+        
+        data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
+        create_torch_dataset(data_config, action_horizon=self.config.model.action_horizon, model_config=self.config.model)
+
+        pass
+
         
 
         
@@ -245,8 +254,10 @@ if __name__ == "__main__":
     # test_pi05.test_subtask_generation()
     # prefix_out = test_pi05.test_compute_loss()
     # print(prefix_out)
-    inference_out = test_pi05.test_inference_HI()
-    print("Inference output:", inference_out)
+    # inference_out = test_pi05.test_inference_HI()
+    # print("Inference output:", inference_out)
+
+    test_pi05.test_mixed_training()
 # python decode_tokens.py "255667 255495 573 255649 255649 16616 573 255649 255649 16616 16616 255642 573 16616 573 255649 3124 255495 235248 255616"
 # python decode_tokens.py "7071 235292 4788 908 573 28660 235269 3040 235292 235248 235274 235324 235324 235248 235274 235324 235318 235248 235284 235310"
 # python decode_tokens.py "255667 1 1 573 1 235292 573 573 8277 235292 1 255495 235248 573 573 573 573 255649 255642 573"
