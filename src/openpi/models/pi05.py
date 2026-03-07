@@ -490,7 +490,6 @@ class Pi05(_model.BaseModel):
             positions=prefix_positions,
         )
 
-        jax.debug.print("\n🔍 PREDICTED SUBTASK TOKENS: {x}", x=prefix_out_pred.shape)
         
         # Compute loss on all subtask tokens
         subtask_loss = self._compute_subtask_loss(prefix_out_pred, observation.subtask_gt_tokens, observation.subtask_gt_mask)
@@ -686,7 +685,7 @@ class Pi05(_model.BaseModel):
         rng: at.KeyArrayLike,
         observation: _model.Observation, 
         original_prompt: str | None = None, 
-        max_tokens: int = 20,
+        max_tokens: int = 200,
         temperature: float = 0.7,
         ) -> tuple[list[int], list[bool]]: 
         """Generate subtask tokens using VLM autoregressive generation with KV caching.

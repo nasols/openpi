@@ -120,31 +120,33 @@ class Policy(BasePolicy):
             """
             Checks if the recent predicted actions converges to a standstill. 
             """
-            should_generate_subtask = False
+            should_generate_subtask = self._should_generate_subtask()
             rng = jax.random.PRNGKey(0) # Replace with actual RNG key management
             if self._current_subtask is None or self._original_prompt is None:
                 self._original_prompt = obs["prompt"]
                 self._current_subtask, self._current_subtask_mask = self._model._generate_subtask(rng, observation, self._original_prompt)
                 logger.log(level=103, msg=f"[HI-Robot] Generated initial subtask: {self._current_subtask}")
-                self.step_count = 0 
+                # self.step_count = 0 
             
             elif should_generate_subtask:
                 self._current_subtask, self._current_subtask_mask = self._model._generate_subtask(rng, observation, self._original_prompt)
                 logger.log(level=103, msg=f"[HI-Robot] Generated subtask on step {self._step_count}: {self._current_subtask}")
-                self.step_count = 0
+                # self.step_count = 0
 
             observation_w_subtask = _model.Observation(
                 images=observation.images,
                 image_masks=observation.image_masks,
                 state=observation.state,
 
-                tokenized_prompt=self._current_subtask,
-                tokenized_prompt_mask=self._current_subtask_mask  
+                tokenized_prompt=jnp.array(self._current_subtask).reshape(observation.tokenized_prompt.shape),
+                tokenized_prompt_mask=jnp.array(self._current_subtask_mask).reshape(observation.tokenized_prompt_mask.shape) 
             )
             
-            observation = observation_w_subtask.deepcopy()
+            observation = observation_w_subtask
         
         ############################
+
+        logger.log(level=103, msg=f"Observation after subtask gen: {observation.tokenized_prompt[0, :10]}")
 
         start_time = time.monotonic()
         outputs = {

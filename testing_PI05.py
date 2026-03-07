@@ -52,7 +52,7 @@ class TestPI05:
         self.load_policy()
 
     def load_policy(self): 
-        self.config = _config.get_config("pi05_droid_mixed")  
+        self.config = _config.get_config("pi05_droid_hi")  
         checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
         self.policy = policy_config.create_trained_policy(self.config, checkpoint_dir)
         self.model : Pi05 = self.policy._model
@@ -207,13 +207,11 @@ class TestPI05:
 
         actions = jnp.array(self.actions)[np.newaxis, ...] # Smacks an new axis to the front, so [15, 8] -> [1, 15, 8]
         actions = jnp.pad(actions, ((0, 0), (0, 0), (0, 24)), mode='constant')  # Pad action dim from 8 to 32, so [1, 15, 8] -> [1, 15, 32] 
-        print(f"Action shape input to model -> {actions.shape}")
 
         self.model.compute_loss(self.rng, self.observation, actions, train=True)
 
     def test_inference_HI(self): 
         assert self.model.hierarchical_mode, "Policy should be in hierarchical mode for this test."
-        print("creating HI dummy data")
         dummy = self.create_dummy_observation_DROID_HI()
 
         data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
@@ -228,6 +226,7 @@ class TestPI05:
             inputs
         ) 
         self.observation = _model.Observation.from_dict(inputs)
+
 
         result = self.policy.infer(dummy)
 
@@ -267,10 +266,11 @@ if __name__ == "__main__":
     # test_pi05.test_subtask_generation()
     # prefix_out = test_pi05.test_compute_loss()
     # print(prefix_out)
-    # inference_out = test_pi05.test_inference_HI()
-    # print("Inference output:", inference_out)
+    for i in range(0, 3): 
+        inference_out = test_pi05.test_inference_HI()
+        print(f"Inference output loop {i}:", inference_out)
 
-    test_pi05.test_mixed_training()
+    # test_pi05.test_mixed_training()
     
 # python decode_tokens.py "255667 255495 573 255649 255649 16616 573 255649 255649 16616 16616 255642 573 16616 573 255649 3124 255495 235248 255616"
 # python decode_tokens.py "7071 235292 4788 908 573 28660 235269 3040 235292 235248 235274 235324 235324 235248 235274 235324 235318 235248 235284 235310"
