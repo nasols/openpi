@@ -216,7 +216,9 @@ class ModelTransformFactory(GroupFactory):
 @dataclasses.dataclass(frozen=True)
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id. Can be a single string or None if using repo_ids.
-    repo_id: str | None = tyro.MISSING
+    # Defaults to None so that the CLI doesn’t force the user to provide it when
+    # using `repo_ids` instead.  We validate manually in `create_base_config`.
+    repo_id: str | None = None
     # List of dataset configurations for mixed dataset training.
     # If specified, repo_id will be ignored.
     repo_ids: Sequence[LeRobotDatasetConfig] | None = None
@@ -239,8 +241,14 @@ class DataConfigFactory(abc.ABC):
             dataset_configs = self.repo_ids
         else:
             # Single dataset mode
-            repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
+            repo_id = self.repo_id
             dataset_configs = None
+
+        # Ensure that the user provided at least one data source.  The CLI no longer
+        # forces `--data.repo-id` but we still want a sensible error message if both
+        # fields are omitted.
+        if repo_id is None and dataset_configs is None:
+            raise ValueError("One of repo_id or repo_ids must be set in the data config.")
         
         asset_id = self.assets.asset_id or (repo_id if isinstance(repo_id, str) else None)
         return dataclasses.replace(
