@@ -211,6 +211,7 @@ def create_torch_dataset(
         A Dataset instance that can be either a single LeRobotDataset, MixedDataset, or FakeDataset.
     """
     # Handle mixed dataset configuration
+    print("Pringint from create_torch_dataset: ", data_config.repo_ids)
     if data_config.repo_ids is not None:
         if len(data_config.repo_ids) == 0:
             raise ValueError("repo_ids list is empty. Must provide at least one dataset configuration.")

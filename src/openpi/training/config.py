@@ -231,6 +231,8 @@ class DataConfigFactory(abc.ABC):
 
     def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # Determine repo_id: use repo_ids if available, otherwise use repo_id
+        print("Printing from DataConfigFactory: ", self.repo_ids)
+        
         if self.repo_ids is not None:
             # Mixed dataset mode: repo_id will be None, and repo_ids will be set
             repo_id = None
