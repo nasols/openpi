@@ -12,6 +12,9 @@ from openpi.models.pi05 import Pi05
 from openpi import transforms as _transforms
 from openpi.shared import download
 from openpi.policies import policy_config
+from openpi.training.data_loader import create_torch_dataset
+from scripts.compute_norm_stats import create_torch_dataloader
+
 
 
 
@@ -49,7 +52,7 @@ class TestPI05:
         self.load_policy()
 
     def load_policy(self): 
-        self.config = _config.get_config("pi05_droid_mixed")  # Test KI mode
+        self.config = _config.get_config("pi05_droid_hi")  
         checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
         self.policy = policy_config.create_trained_policy(self.config, checkpoint_dir)
         self.model : Pi05 = self.policy._model
@@ -204,9 +207,50 @@ class TestPI05:
 
         actions = jnp.array(self.actions)[np.newaxis, ...] # Smacks an new axis to the front, so [15, 8] -> [1, 15, 8]
         actions = jnp.pad(actions, ((0, 0), (0, 0), (0, 24)), mode='constant')  # Pad action dim from 8 to 32, so [1, 15, 8] -> [1, 15, 32] 
-        print(f"Action shape input to model -> {actions.shape}")
 
         self.model.compute_loss(self.rng, self.observation, actions, train=True)
+
+    def test_inference_HI(self): 
+        assert self.model.hierarchical_mode, "Policy should be in hierarchical mode for this test."
+        dummy = self.create_dummy_observation_DROID_HI()
+
+        data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
+        data_input_transforms = _transforms.compose(data_config.data_transforms.inputs)
+        model_transforms = _transforms.compose(data_config.model_transforms.inputs)
+
+        inputs = jax.tree.map(lambda x: x, dummy)
+        inputs = data_input_transforms(inputs)
+        inputs = model_transforms(inputs)
+        inputs = jax.tree.map(
+            lambda x: jnp.asarray(x)[np.newaxis, ...],
+            inputs
+        ) 
+        self.observation = _model.Observation.from_dict(inputs)
+
+
+        result = self.policy.infer(dummy)
+
+        return result
+
+    def test_mixed_training(self): 
+        
+        data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
+        print(f"TESTING DATASET CREATION")
+        create_torch_dataset(data_config, action_horizon=self.config.model.action_horizon, model_config=self.config.model)
+        print(f"DATASET CREATED!")
+        print(f"TESTING DATALOADER CREATION")
+        create_torch_dataloader(
+            data_config,
+            self.model.action_horizon,
+            self.config.batch_size,
+            self.config.model,
+            self.config.num_workers,
+        )
+        print(f"DATALOADER CREATED!")
+
+        pass
+
+        
 
         
 
@@ -220,10 +264,14 @@ if __name__ == "__main__":
     
     # test_pi05.test_compute_fast_loss()
     # test_pi05.test_subtask_generation()
-    prefix_out = test_pi05.test_compute_loss()
-    print(prefix_out)
-    
+    # prefix_out = test_pi05.test_compute_loss()
+    # print(prefix_out)
+    for i in range(0, 3): 
+        inference_out = test_pi05.test_inference_HI()
+        print(f"Inference output loop {i}:", inference_out)
 
+    # test_pi05.test_mixed_training()
+    
 # python decode_tokens.py "255667 255495 573 255649 255649 16616 573 255649 255649 16616 16616 255642 573 16616 573 255649 3124 255495 235248 255616"
 # python decode_tokens.py "7071 235292 4788 908 573 28660 235269 3040 235292 235248 235274 235324 235324 235248 235274 235324 235318 235248 235284 235310"
 # python decode_tokens.py "255667 1 1 573 1 235292 573 573 8277 235292 1 255495 235248 573 573 573 573 255649 255642 573"

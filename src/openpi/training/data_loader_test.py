@@ -63,7 +63,7 @@ def test_with_fake_dataset():
 
 
 def test_with_real_dataset():
-    config = _config.get_config("pi05_droid_finetune")
+    config = _config.get_config("pi05_droid_mixed")
     config = dataclasses.replace(config, batch_size=4)
 
     loader = _data_loader.create_data_loader(
