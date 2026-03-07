@@ -1221,11 +1221,11 @@ def get_config(config_name: str) -> TrainConfig:
 class PolicyConfig: # Can be expanded with KI and HI pipelines 
     config_name : str
     exp_name: str = None
-
+    checkpoint: str = None
     @property
     def get_checkpoint_dir(self): 
-        if self.exp_name is not None: 
-            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/").resolve()
+        if self.exp_name is not None and self.checkpoint is not None: 
+            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
         else: 
             return f"gs://openpi-assets/checkpoints/{self.config_name}"
     @property
@@ -1236,11 +1236,12 @@ class PolicyConfig: # Can be expanded with KI and HI pipelines
     def get_training_config(self): 
         return get_config(self.config_name)
 
-def get_policy_config(config_name:str, exp_name:str|None=None) : 
+def get_policy_config(config_name:str, exp_name:str|None=None, checkpoint:str|None=None) : 
 
     pc = PolicyConfig(
         config_name=config_name, 
-        exp_name=exp_name)
+        exp_name=exp_name,
+        checkpoint=checkpoint)
 
     return pc
 
