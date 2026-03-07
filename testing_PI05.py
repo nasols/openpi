@@ -13,8 +13,8 @@ from openpi import transforms as _transforms
 from openpi.shared import download
 from openpi.policies import policy_config
 from openpi.training.data_loader import create_torch_dataset
+from scripts.compute_norm_stats import create_torch_dataloader
 
-from openpi.training.data_loader import create_torch_dataset
 
 
 
@@ -236,7 +236,18 @@ class TestPI05:
     def test_mixed_training(self): 
         
         data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
+        print(f"TESTING DATASET CREATION")
         create_torch_dataset(data_config, action_horizon=self.config.model.action_horizon, model_config=self.config.model)
+        print(f"DATASET CREATED!")
+        print(f"TESTING DATALOADER CREATION")
+        create_torch_dataloader(
+            data_config,
+            self.model.action_horizon,
+            self.config.batch_size,
+            self.config.model,
+            self.config.num_workers,
+        )
+        print(f"DATALOADER CREATED!")
 
         pass
 
@@ -260,6 +271,7 @@ if __name__ == "__main__":
     # print("Inference output:", inference_out)
 
     test_pi05.test_mixed_training()
+    
 # python decode_tokens.py "255667 255495 573 255649 255649 16616 573 255649 255649 16616 16616 255642 573 16616 573 255649 3124 255495 235248 255616"
 # python decode_tokens.py "7071 235292 4788 908 573 28660 235269 3040 235292 235248 235274 235324 235324 235248 235274 235324 235318 235248 235284 235310"
 # python decode_tokens.py "255667 1 1 573 1 235292 573 573 8277 235292 1 255495 235248 573 573 573 573 255649 255642 573"

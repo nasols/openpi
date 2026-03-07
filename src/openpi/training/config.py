@@ -1026,7 +1026,7 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             assets=AssetsConfig(
                 # Important: use the same normalization stats for all datasets
-                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets", # Training from DROID base checkpoint
                 asset_id="droid",
             ),
         ),
@@ -1042,7 +1042,7 @@ _CONFIGS = [
         #         asset_id="droid",
         #     ),
         # ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"), # Training from DROID base checkpoint 
         #weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi05_droid_finetune/test_base_01/2099/params"),
         num_train_steps=3000, #+ 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
         save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
