@@ -58,7 +58,7 @@ class Policy(BasePolicy):
             is_pytorch: Whether the model is a PyTorch model. If False, assumes JAX model.
             hierarchical_mode: If True, use hierarchical planning (HI-robot style).
         """
-        self._model = model
+        self._model:Pi05 = model
         self._input_transform = _transforms.compose(transforms)
         self._output_transform = _transforms.compose(output_transforms)
         self._sample_kwargs = sample_kwargs or {}
@@ -69,7 +69,10 @@ class Policy(BasePolicy):
         # Hierarchical planning state
         self._hierarchical_mode = hierarchical_mode
         self._current_subtask = None
-        self._original_prompt = None                                    
+        self._original_prompt = None      
+        self._min_steps_subcount = 5  # Minimum steps before checking subtask completion
+        self._step_count = 6
+        self._completion_threshold = 0.8  # Similarity threshold for subtask completion                              
 
         if self._hierarchical_mode: 
             self._tokenizer = _tokenizer.PaligemmaTokenizer(max_len=model.max_token_len) 
@@ -98,6 +101,7 @@ class Policy(BasePolicy):
             inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
             sample_rng_or_pytorch_device = self._pytorch_device
 
+
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
         if noise is not None:
@@ -108,15 +112,40 @@ class Policy(BasePolicy):
             sample_kwargs["noise"] = noise
 
         observation = _model.Observation.from_dict(inputs)
-
+        
         ### HIERARCHICAL PLANNING ###
         #############################
-        # prompt = obs.get("prompt", None)
-        # if self._hierarchical_mode and prompt is not None:
-        #     _subtask = self._model.generate_subtask(observation, prompt)
-        #     logger.log(level=103, msg=f"[HI-Robot] Generated subtask: {_subtask}")
 
+        if self._hierarchical_mode: 
+            """
+            Checks if the recent predicted actions converges to a standstill. 
+            """
+            should_generate_subtask = False
+            rng = jax.random.PRNGKey(0) # Replace with actual RNG key management
+            if self._current_subtask is None or self._original_prompt is None:
+                self._original_prompt = obs["prompt"]
+                self._current_subtask, self._current_subtask_mask = self._model._generate_subtask(rng, observation, self._original_prompt)
+                logger.log(level=103, msg=f"[HI-Robot] Generated initial subtask: {self._current_subtask}")
+                self.step_count = 0 
+            
+            elif should_generate_subtask:
+                self._current_subtask, self._current_subtask_mask = self._model._generate_subtask(rng, observation, self._original_prompt)
+                logger.log(level=103, msg=f"[HI-Robot] Generated subtask on step {self._step_count}: {self._current_subtask}")
+                self.step_count = 0
+
+            observation_w_subtask = _model.Observation(
+                images=observation.images,
+                image_masks=observation.image_masks,
+                state=observation.state,
+
+                tokenized_prompt=self._current_subtask,
+                tokenized_prompt_mask=self._current_subtask_mask  
+            )
+            
+            observation = observation_w_subtask.deepcopy()
+        
         ############################
+
         start_time = time.monotonic()
         outputs = {
             "state": inputs["state"],
@@ -138,69 +167,16 @@ class Policy(BasePolicy):
     def metadata(self) -> dict[str, Any]:
         return self._metadata
 
-
-
-    def _check_subtask_completion(self, inputs: dict, subtask: str) -> bool:
-        """Check if current subtask is visually complete using CLIP/vision encoder.
-        
-        Args:
-            inputs: Current observation with image
-            subtask: Current subtask description
-            
-        Returns:
-            True if subtask appears complete (high similarity), False otherwise
+    def _should_generate_subtask(self) -> bool:
         """
-        # Try to use model's vision encoder for similarity
-        if hasattr(self._model, 'compute_visual_text_similarity'):
-            try:
-                similarity = self._model.compute_visual_text_similarity(
-                    inputs["image"], 
-                    subtask
-                )
-                is_complete = similarity > self._completion_threshold
-                if is_complete:
-                    logger.log(level=103, msg=f"[HI-Robot] Subtask complete (similarity={similarity:.3f})")
-                return is_complete
-            except Exception as e:
-                logging.warning(f"[HI-Robot] Visual completion check failed: {e}")
-                return False
-        
-        # Fallback: Try to access vision encoder directly from PaliGemma
-        elif hasattr(self._model, 'paligemma_with_expert'):
-            try:
-                paligemma = self._model.paligemma_with_expert
-                if hasattr(paligemma, 'vision_encoder'):
-                    # Get image embedding
-                    image = inputs["image"]
-                    if self._is_pytorch_model:
-                        if not isinstance(image, torch.Tensor):
-                            image = torch.from_numpy(np.array(image)).to(self._pytorch_device)
-                        if image.ndim == 3:  # Add batch dimension
-                            image = image.unsqueeze(0)
-                        
-                        # Get vision features
-                        with torch.no_grad():
-                            vision_features = paligemma.vision_encoder(image)
-                            # Use text encoder if available
-                            if hasattr(paligemma, 'text_encoder'):
-                                text_features = paligemma.text_encoder([subtask])
-                                # Compute cosine similarity
-                                similarity = torch.nn.functional.cosine_similarity(
-                                    vision_features.mean(dim=1),  # Pool spatial dimensions
-                                    text_features,
-                                    dim=-1
-                                ).item()
-                                is_complete = similarity > self._completion_threshold
-                                if is_complete:
-                                    logger.log(level=103, msg=f"[HI-Robot] Subtask complete (similarity={similarity:.3f})")
-                                return is_complete
-            except Exception as e:
-                logger.warning(f"[HI-Robot] Direct vision encoder access failed: {e}")
-                return False
-        
-        # No vision encoder available, fallback to step count
-        logger.debug("[HI-Robot] Visual completion check not available, using step count")
-        return False
+        Naive regeneration check. 
+        Checks if "enogh time" has passed before triggering subtask generation. 
+        """
+        if self._step_count < self._min_steps_subcount: 
+            return False 
+
+        return True 
+
     
     def reset_hierarchical_state(self):
         """Reset hierarchical planning state (call between episodes)."""

@@ -12,6 +12,7 @@ from openpi.models.pi05 import Pi05
 from openpi import transforms as _transforms
 from openpi.shared import download
 from openpi.policies import policy_config
+from openpi.training.data_loader import create_torch_dataset
 
 from openpi.training.data_loader import create_torch_dataset
 
@@ -210,6 +211,37 @@ class TestPI05:
 
         self.model.compute_loss(self.rng, self.observation, actions, train=True)
 
+    def test_inference_HI(self): 
+        assert self.model.hierarchical_mode, "Policy should be in hierarchical mode for this test."
+        print("creating HI dummy data")
+        dummy = self.create_dummy_observation_DROID_HI()
+
+        data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
+        data_input_transforms = _transforms.compose(data_config.data_transforms.inputs)
+        model_transforms = _transforms.compose(data_config.model_transforms.inputs)
+
+        inputs = jax.tree.map(lambda x: x, dummy)
+        inputs = data_input_transforms(inputs)
+        inputs = model_transforms(inputs)
+        inputs = jax.tree.map(
+            lambda x: jnp.asarray(x)[np.newaxis, ...],
+            inputs
+        ) 
+        self.observation = _model.Observation.from_dict(inputs)
+
+        result = self.policy.infer(dummy)
+
+        return result
+
+    def test_mixed_training(self): 
+        
+        data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
+        create_torch_dataset(data_config, action_horizon=self.config.model.action_horizon, model_config=self.config.model)
+
+        pass
+
+        
+
         
 
 
@@ -224,15 +256,10 @@ if __name__ == "__main__":
     # test_pi05.test_subtask_generation()
     # prefix_out = test_pi05.test_compute_loss()
     # print(prefix_out)
+    # inference_out = test_pi05.test_inference_HI()
+    # print("Inference output:", inference_out)
 
-    data_config = test_pi05.config.data.create(test_pi05.config.assets_dirs, test_pi05.config.model)
-    print(data_config.repo_ids)
-    model_config = test_pi05.config.model
-    action_horizon = model_config.action_horizon
-
-    create_torch_dataset(data_config=data_config, action_horizon=action_horizon, model_config=model_config)
-
-
+    test_pi05.test_mixed_training()
 # python decode_tokens.py "255667 255495 573 255649 255649 16616 573 255649 255649 16616 16616 255642 573 16616 573 255649 3124 255495 235248 255616"
 # python decode_tokens.py "7071 235292 4788 908 573 28660 235269 3040 235292 235248 235274 235324 235324 235248 235274 235324 235318 235248 235284 235310"
 # python decode_tokens.py "255667 1 1 573 1 235292 573 573 8277 235292 1 255495 235248 573 573 573 573 255649 255642 573"
