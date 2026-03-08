@@ -2,13 +2,13 @@
 #SBATCH --partition=GPUQ
 #SBATCH --gres=gpu:a100:2
 #SBATCH --constraint=gpu80g
-#SBATCH --time=3:30:00
+#SBATCH --time=5:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=120G
-#SBATCH --job-name="mixed_01"
-#SBATCH --output=../slurm_outputs/JOB_OUTPUT_mixed_01.out
+#SBATCH --job-name="comparison_sequential_01"
+#SBATCH --output=../slurm_outputs/JOB_OUTPUT_comparison_sequential_01.out
 #SBATCH --mail-user=jonasbol@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
@@ -20,4 +20,4 @@ export HYDRA_FULL_ERROR=1
 export CONDA_ROOT_PREFIX=/cluster/home/jonasbol/conda
 source $CONDA_ROOT_PREFIX/.venv/bin/activate
 
-uv run scripts/train.py pi05_droid_finetune --exp-name=mixed_01 --overwrite
+uv run scripts/train.py pi05_droid_finetune --exp-name=comparison_sequential_01 --overwrite

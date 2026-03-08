@@ -266,6 +266,13 @@ if __name__ == "__main__":
     # test_pi05.test_subtask_generation()
     # prefix_out = test_pi05.test_compute_loss()
     # print(prefix_out)
+
+    create_torch_dataset(
+        test_pi05.config.data.create(test_pi05.config.assets_dirs, test_pi05.config.model),
+        test_pi05.config.model.action_horizon, 
+        test_pi05.config.model
+        )
+    
     for i in range(0, 3): 
         inference_out = test_pi05.test_inference_HI()
         print(f"Inference output loop {i}:", inference_out)
