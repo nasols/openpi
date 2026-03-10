@@ -52,7 +52,7 @@ class TestPI05:
         self.load_policy()
 
     def load_policy(self): 
-        self.config = _config.get_config("pi05_droid_hi")  
+        self.config = _config.get_config("pi05_droid_finetune")  
         checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
         self.policy = policy_config.create_trained_policy(self.config, checkpoint_dir)
         self.model : Pi05 = self.policy._model
@@ -272,7 +272,7 @@ if __name__ == "__main__":
         test_pi05.config.model.action_horizon, 
         test_pi05.config.model
         )
-    
+    print("MANAGED TO LOAD TORCH SET")
     for i in range(0, 3): 
         inference_out = test_pi05.test_inference_HI()
         print(f"Inference output loop {i}:", inference_out)
