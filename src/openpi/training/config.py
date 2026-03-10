@@ -1028,7 +1028,7 @@ _CONFIGS = [
             repo_ids=[
                 # Each dataset can have a different sampling weight
                 # Higher weight = more samples from this dataset during training
-                LeRobotDatasetConfig(repo_id="new_pickupcube", weight=1.0),
+                LeRobotDatasetConfig(repo_id="old_pickupcube", weight=1.0),
                 LeRobotDatasetConfig(repo_id="new_pickandplace", weight=1.0), 
             ],
             base_config=DataConfig(prompt_from_task=True),
@@ -1041,12 +1041,12 @@ _CONFIGS = [
         
         # data=LeRobotDROIDDataConfig(
         #     # Replace with your custom DROID LeRobot dataset repo id.
-        #     repo_id="new_pickandplace",
+        #     repo_id="old_pickupcube",
         #     base_config=DataConfig(prompt_from_task=True),
         #     assets=AssetsConfig(
         #         # Important: reuse the original DROID norm stats during fine-tuning!
         #         assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
-        #         # assets_dir="./checkpoints/pi05_droid_finetune/comparison_sequential_01/4099/assets",
+        #         # assets_dir="./checkpoints/pi05_droid_finetune/test_base_01/2099/assets",
         #         asset_id="droid",
         #     ),
         # ),

@@ -12,7 +12,7 @@ from openpi.models.pi05 import Pi05
 from openpi import transforms as _transforms
 from openpi.shared import download
 from openpi.policies import policy_config
-from openpi.training.data_loader import create_torch_dataset
+from openpi.training.data_loader import create_torch_dataset, MixedDataset
 from scripts.compute_norm_stats import create_torch_dataloader
 
 
@@ -236,7 +236,7 @@ class TestPI05:
         
         data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
         print(f"TESTING DATASET CREATION")
-        create_torch_dataset(data_config, action_horizon=self.config.model.action_horizon, model_config=self.config.model)
+        mixedset : MixedDataset = create_torch_dataset(data_config, action_horizon=self.config.model.action_horizon, model_config=self.config.model)
         print(f"DATASET CREATED!")
         print(f"TESTING DATALOADER CREATION")
         create_torch_dataloader(
@@ -248,6 +248,9 @@ class TestPI05:
         )
         print(f"DATALOADER CREATED!")
 
+        print("TESTING GETITEM")
+        mixedset.__getitem__(0)
+        print("GETITEM WORKED!")
         pass
 
         
@@ -277,7 +280,6 @@ if __name__ == "__main__":
         inference_out = test_pi05.test_inference_HI()
         print(f"Inference output loop {i}:", inference_out)
 
-    # test_pi05.test_mixed_training()
     
 # python decode_tokens.py "255667 255495 573 255649 255649 16616 573 255649 255649 16616 16616 255642 573 16616 573 255649 3124 255495 235248 255616"
 # python decode_tokens.py "7071 235292 4788 908 573 28660 235269 3040 235292 235248 235274 235324 235324 235248 235274 235324 235318 235248 235284 235310"
