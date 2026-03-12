@@ -1281,7 +1281,9 @@ class PolicyConfig: # Can be expanded with KI and HI pipelines
     @property
     def get_checkpoint_dir(self): 
         if self.exp_name is not None and self.checkpoint is not None: 
-            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
+#            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
+            return pathlib.Path(f"/media/ril_mtplab/HDD 2TB/vla/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
+
         else: 
             return f"gs://openpi-assets/checkpoints/{self.config_name}"
     @property
