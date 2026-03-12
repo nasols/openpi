@@ -686,7 +686,8 @@ class Pi05(_model.BaseModel):
         observation: _model.Observation, 
         original_prompt: str | None = None, 
         max_tokens: int = 200,
-        temperature: float = 0.7,
+        eos_token_id: int = 1, 
+        temperature: float = 0.0,
         ) -> tuple[list[int], list[bool]]: 
         """Generate subtask tokens using VLM autoregressive generation with KV caching.
         
@@ -701,7 +702,7 @@ class Pi05(_model.BaseModel):
             original_prompt: Original high-level task (for logging only)
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
-            
+            eos_token_id: Token ID for end-of-sequence
         Returns:
             List of generated token IDs (not including prompt tokens)
             List of boolean values indicating whether each generated token is a subtask token
@@ -709,24 +710,73 @@ class Pi05(_model.BaseModel):
         if original_prompt is not None:
             logger.log(level=103, msg=f"[HI-Robot] Generating subtask for prompt: {original_prompt}")
 
+        batch_size = observation.tokenized_prompt.shape[0]
+        
         # Get initial prefix embeddings (images + DECOMPOSITION prompt from observation)
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_tokens_embedding, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
         
         # Initial forward pass to get KV cache
         (prefix_out, _), kv_cache = self.PaliGemma.llm(
-            [prefix_tokens, None],
+            [prefix_tokens_embedding, None],
             mask=prefix_attn_mask,
             positions=prefix_positions,
         )
-        
-        embedding_table = self.PaliGemma.llm.embedder["input_embedding"]
+        last_embedding = prefix_out[:, -1:, :]
+        last_logits = self.PaliGemma.llm(last_embedding, method="decode")  
+        last_logits = jax.nn.log_softmax(last_logits, axis=-1)  
+        output_tokens = jnp.zeros((batch_size, max_tokens))
+    
+        def step(carry): 
+            rng, last_logit, output_tokens, cache, _, step = carry
+            rng, rng_step = jax.random.split(rng)
+            token = jax.lax.cond(
+                temperature > 0,
+                lambda : jax.random.categorical(rng_step, last_logit / temperature, axis=-1),
+                lambda : jnp.argmax(last_logit, axis=-1),
+                operand=None
+            )
+            jnp.put_along_axis(output_tokens, jnp.broadcast_to(step, (token.shape[0], 1)), token)
+
+            eos = jnp.all(jnp.any(token == eos_token_id, axis=-1))
+
+            token_embedding = self.PaliGemma.llm(token, method="embed")
+            positions = jnp.array([[prefix_out.shape[1] + step]], dtype=jnp.int32)
+            attn_mask = jnp.ones((1, 1, prefix_out.shape[1] + step), dtype=jnp.bool_)
+            (prefix_out, _), kv_cache = self.PaliGemma.llm(
+                [token_embedding, None],
+                mask = attn_mask,
+                positions = positions,
+                kv_cache = cache
+            )
+            last_embedding = prefix_out[:, -1:, :]
+            last_logit = self.PaliGemma.llm(last_embedding, method="decode")
+            last_logit = jax.nn.log_softmax(last_logit, axis=-1)
+
+            return rng, last_logit, output_tokens, kv_cache, eos, step + 1
+
+        def cond(carry):
+            _, _, _, _, eos, step = carry
+            return (~eos) & (step < max_tokens)
+            
+
+        _, _, output_tokens, kv_cache, _, _ = jax.lax.while_loop(
+            cond, step, (rng, last_logits, output_tokens, kv_cache, False, 0)
+        )
+
+        mask = jnp.concatenate([prefix_mask, (output_tokens != 0)].astype(jnp.bool_), axis=1)
+        ar_mask = jnp.concatenate([prefix_ar_mask, jnp.array([True] * max_tokens)], axis=0)
+
+        return output_tokens, kv_cache, mask, ar_mask 
+
+
+
         generated_tokens = []
         
         # Current sequence length (for position tracking)
-        current_length = prefix_tokens.shape[1]
+        current_length = prefix_tokens_embedding.shape[1]
         
         # Autoregressive generation loop with KV caching
         for step in range(max_tokens):

@@ -183,7 +183,7 @@ class MixedDataset(Dataset):
         dataset_idx = np.searchsorted(self._cumulative_sizes[1:], idx, side='right')
         
         # Calculate the local index within that dataset
-        local_idx = idx - self._cumulative_sizes[dataset_idx]
+        local_idx = int(idx - self._cumulative_sizes[dataset_idx])
         
         return self._datasets[dataset_idx][local_idx]
     
