@@ -1062,7 +1062,7 @@ _CONFIGS = [
         log_interval=100,
         keep_period=None, # Don't delete any checkpoints based on step number
         batch_size=32,
-        fsdp_devices=2,
+        fsdp_devices=1, # 2
     ),
     TrainConfig(
         # This config is for fine-tuning pi05-DROID on a custom (smaller) DROID dataset.

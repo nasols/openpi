@@ -272,8 +272,8 @@ def main(config: _config.TrainConfig):
             infos = []
         batch = next(data_iter)
 
-        if config.save_list is not None : # Enables saving at specific steps. 
-            if step in config.save_list:
+        if config.keep_list is not None : # Enables saving at specific steps. 
+            if step in config.keep_list:
                  _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
         
         else :
