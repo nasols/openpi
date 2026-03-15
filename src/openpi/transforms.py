@@ -254,7 +254,6 @@ class TokenizePrompt(DataTransformFn):
     discrete_state_input: bool = False
 
     def __call__(self, data: DataDict) -> DataDict:
-        #logger.log(level=103, msg="[DEBUG] Tokenizing prompt ...")
         if (prompt := data.pop("prompt", None)) is None:
             raise ValueError("Prompt is required")
 
@@ -276,7 +275,6 @@ class TokenizeHierarchicalPrompt(DataTransformFn):
     
     def __call__(self, data: DataDict) -> DataDict:
 
-        logger.log(level=103, msg=f"[DEBUG] Recieved Data dict: {list(data.keys())}")
         prompt = data.pop("prompt")
         try: 
             subtask = data.pop("subtask")  # Ground truth from dataset
@@ -286,7 +284,6 @@ class TokenizeHierarchicalPrompt(DataTransformFn):
         state = data["state"]
         
         if subtask is not None: 
-            logger.log(level=103, msg=f"[DEBUG] Tokenizing hierarchical prompt with subtask ...{subtask} ...")
             # Gives out tokenized prompt of format: "Task: {subtastk}, State: {state}, Action: "
             tokens, token_masks = self.tokenizer.tokenize(subtask, state) # Tokenizing the subtask *Teacher forcing*
 
@@ -295,9 +292,7 @@ class TokenizeHierarchicalPrompt(DataTransformFn):
 
             # Tokenize raw subtask WITHOUT BOS token (will be concatenated to decomposition prompt for teacher forcing)
             st_gt_tokens, st_gt_token_masks = self.tokenizer.tokenize_raw_text(subtask)
-            logger.log(level=103, msg=f"[DEBUG] st_gt_tokens from tokenize_raw_text: {st_gt_tokens[:10].tolist()}")
-            logger.log(level=103, msg=f"[DEBUG] Expected [18075, 908, 573, 28660] for 'pick up the cube'")
-
+          
             return {
                 **data,
                 "tokenized_prompt": st_tokens,  # Decomposition prompt
@@ -308,7 +303,8 @@ class TokenizeHierarchicalPrompt(DataTransformFn):
                 "subtask_gt_mask": st_gt_token_masks,
             }
         
-        else: 
+        else: # Inference 
+            # Gives out tokenized prompt of format: "Task: {prompt}, State: {state}, Subtask: " 
             tokens, token_masks = self.tokenizer.tokenize_subtask(prompt, state) # Tokenizing the decomposition prompt
             return {
                 **data,

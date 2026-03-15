@@ -52,7 +52,7 @@ class TestPI05:
         self.load_policy()
 
     def load_policy(self): 
-        self.config = _config.get_config("pi05_droid_finetune")  
+        self.config = _config.get_config("pi05_droid_hi")  
         checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
         self.policy = policy_config.create_trained_policy(self.config, checkpoint_dir)
         self.model : Pi05 = self.policy._model
@@ -263,7 +263,7 @@ if __name__ == "__main__":
     test_pi05 = TestPI05()
     print("Model type:", test_pi05.model.model_type)
     assert isinstance(test_pi05.model, Pi05), "Loaded model should be an instance of Pi05"
-    # test_pi05.test_data_transforms()
+    test_pi05.test_data_transforms()
     
     # test_pi05.test_compute_fast_loss()
     # test_pi05.test_subtask_generation()

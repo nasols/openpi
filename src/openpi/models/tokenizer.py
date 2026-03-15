@@ -16,7 +16,6 @@ class PaligemmaTokenizer:
     def __init__(self, max_len: int = 48):
         self._max_len = max_len
 
-        # print("\n[DEBUG] PaligemmaTokenizer.__init__ called. PID:", os.getpid())
         # traceback.print_stack(limit=30)
 
         path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
@@ -60,7 +59,7 @@ class PaligemmaTokenizer:
         cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
         discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
         state_str = " ".join(map(str, discretized_state))
-        full_prompt = f"Decompose the following task into one subtask. Task: {cleaned_text}, State: {state_str};\Subtask: "
+        full_prompt = f"Task: {cleaned_text};\n Subtask: "
         tokens = self._tokenizer.encode(full_prompt, add_bos=True)
 
         tokens_len = len(tokens)
