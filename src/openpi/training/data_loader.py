@@ -129,7 +129,8 @@ class FakeDataset(Dataset):
 
 
 class MixedDataset(Dataset):
-    """Dataset that mixes multiple LeRobot datasets with specified sampling weights.
+    """
+    Dataset that mixes multiple LeRobot datasets with specified sampling weights.
     
     This dataset creates a weighted mixture of multiple datasets, where each dataset
     can be sampled with a different probability. The total number of samples is the
@@ -152,9 +153,9 @@ class MixedDataset(Dataset):
         self._weights = list(weights)
         
         # Calculate cumulative dataset sizes for mapping indices
-        self._dataset_sizes = [len(ds) for ds in self._datasets]
-        self._cumulative_sizes = np.cumsum([0] + self._dataset_sizes)
-        self._total_size = sum(self._dataset_sizes)
+        self._dataset_sizes = [len(ds) for ds in self._datasets] # individual dataset sizes
+        self._cumulative_sizes = np.cumsum([0] + self._dataset_sizes) # e.g. for two datasets of size 100 and 200, cumulative_sizes will be [0, 100, 300]
+        self._total_size = sum(self._dataset_sizes) # total size of the mixed dataset
         
         # Normalize weights
         total_weight = sum(self._weights)
@@ -165,8 +166,8 @@ class MixedDataset(Dataset):
         sample_weights = []
         for dataset_idx, (ds_size, ds_weight) in enumerate(zip(self._dataset_sizes, self._normalized_weights)):
             # Each sample in this dataset gets equal probability within the dataset's allocation
-            weight_per_sample = ds_weight / ds_size
-            sample_weights.extend([weight_per_sample] * ds_size)
+            weight_per_sample = ds_weight / ds_size # weight for each sample in this dataset, e.g. if dataset has weight 0.7 and size 100, each sample gets 0.007
+            sample_weights.extend([weight_per_sample] * ds_size) # extend the list with the weight for each sample in this dataset
         
         self._sample_weights = sample_weights
         
@@ -175,12 +176,16 @@ class MixedDataset(Dataset):
             logging.info(f"  Dataset {i}: {size} samples, weight={weight:.3f} ({self._normalized_weights[i]*100:.1f}%)")
     
     def __getitem__(self, index: SupportsIndex) -> dict:
-        idx = index.__index__()
+        """
+        Get sample from dataset, inherited from Dataset class
+        """
+        idx = index.__index__() # 
         if idx < 0 or idx >= self._total_size:
             raise IndexError(f"Index {idx} out of range for dataset of size {self._total_size}")
         
         # Find which dataset this index belongs to
-        dataset_idx = np.searchsorted(self._cumulative_sizes[1:], idx, side='right')
+        # Searches the cumulative sizes list to find the index limits. E.g. the cumsum list is [0, 100, 300], if idx=150, it means the index belongs to the second dataset
+        dataset_idx = np.searchsorted(self._cumulative_sizes[1:], idx, side='right') 
         
         # Calculate the local index within that dataset
         local_idx = int(idx - self._cumulative_sizes[dataset_idx])
