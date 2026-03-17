@@ -17,8 +17,6 @@ from openpi.shared import array_typing as at
 from openpi import transforms as _transforms
 
 
-
-
 logger = logging.getLogger("openpi")
 
 

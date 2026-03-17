@@ -154,9 +154,11 @@ class Policy(BasePolicy):
         logger.log(level=103, msg=f"Observation after subtask gen: {observation.tokenized_prompt[0, :10]}")
         
         start_time = time.monotonic()
+        actions, hist = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         outputs = {
             "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+            "actions": actions,
+            # "hist": hist,
         }
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
@@ -168,6 +170,7 @@ class Policy(BasePolicy):
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }
+        outputs['hist'] = hist
         return outputs
 
     @property
