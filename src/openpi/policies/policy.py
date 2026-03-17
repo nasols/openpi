@@ -120,15 +120,20 @@ class Policy(BasePolicy):
             """
             Checks if the recent predicted actions converges to a standstill. 
             """
+
+            logger.log(level=103, msg=f"[HI-Robot] Observation tokenized prompt: {observation.tokenized_prompt.shape}")
+            logger.log(level=103, msg=f"[HI-Robot] Decoded observation tokenized prompt: {self._tokenizer.decode(observation.tokenized_prompt)}") 
             should_generate_subtask = self._should_generate_subtask()
             rng = jax.random.PRNGKey(0) # Replace with actual RNG key management
             if self._current_subtask is None or self._original_prompt is None:
                 self._original_prompt = obs["prompt"]
-                self._current_subtask, self._current_subtask_mask = self._model._generate_subtask(rng, observation, self._original_prompt)
+                logger.log(level=103, msg=f"[HI-Robot] Generating initial subtask...")
+                self._current_subtask, self._current_subtask_mask = self._model._generate_subtask(rng, observation, self._original_prompt, temperature=0.5)
                 logger.log(level=103, msg=f"[HI-Robot] Generated initial subtask: {self._current_subtask}")
                 # self.step_count = 0 
             
             elif should_generate_subtask:
+                logger.log(level=103, msg=f"[HI-Robot] Regenerating subtask on step {self._step_count}...")
                 self._current_subtask, self._current_subtask_mask = self._model._generate_subtask(rng, observation, self._original_prompt)
                 logger.log(level=103, msg=f"[HI-Robot] Generated subtask on step {self._step_count}: {self._current_subtask}")
                 # self.step_count = 0
@@ -147,7 +152,7 @@ class Policy(BasePolicy):
         ############################
 
         logger.log(level=103, msg=f"Observation after subtask gen: {observation.tokenized_prompt[0, :10]}")
-
+        
         start_time = time.monotonic()
         outputs = {
             "state": inputs["state"],

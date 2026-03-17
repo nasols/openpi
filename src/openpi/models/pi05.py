@@ -50,6 +50,31 @@ def make_attn_mask(input_mask, mask_ar):
     valid_mask = input_mask[:, None, :] * input_mask[:, :, None]
     return jnp.logical_and(attn_mask, valid_mask)
 
+@jax.vmap
+def lef_to_right_map(x, input_mask, attn_mask): 
+    seq_len = input_mask.sum()
+    shift = -seq_len.astype(int)
+
+    x = jnp.roll(x, shift, axis=0)
+    input_mask = jnp.roll(input_mask, shift)
+    attn_mask = jnp.roll(attn_mask, shift, axis=(0, 1))
+
+    return x, input_mask, attn_mask
+
+@jax.vmap
+def left_to_right_align(x, input_mask, attn_mask):
+    """Converts input from left-align to right-aligned."""
+    # Due to vmap, this is operating in a single example (not batch level).
+    assert x.ndim == 2
+    assert input_mask.ndim == 1
+    assert attn_mask.ndim == 2
+    assert x.shape[0] == input_mask.shape[0]
+    assert attn_mask.shape[0] == attn_mask.shape[1], attn_mask.shape
+    seqlen = jnp.max(input_mask * jnp.arange(input_mask.shape[0])) + 1
+    x = jnp.roll(x, -seqlen, axis=0)
+    input_mask = jnp.roll(input_mask, -seqlen, axis=0)
+    attn_mask = jnp.roll(attn_mask, -seqlen, axis=(0, 1))
+    return x, input_mask, attn_mask
 
 @at.typecheck
 def posemb_sincos(
@@ -679,6 +704,8 @@ class Pi05(_model.BaseModel):
     # JAX only accepts one instance so either find a workaround using the data pipeline tokenizer or something else to be able to run HI-Robot
     # This todo is only affecting the HI-Robot part of the pipeline. Maybe not even crucial for training. 
 
+
+
     @at.typecheck
     def _generate_subtask(
         self, 
@@ -688,7 +715,8 @@ class Pi05(_model.BaseModel):
         max_tokens: int = 200,
         eos_token_id: int = 1, 
         temperature: float = 0.0,
-        ) -> tuple[list[int], list[bool]]: 
+        debug_top_k: int = 5,
+        ) -> tuple[at.Int[at.Array, "b s"], at.Bool[at.Array, "b s"]]: 
         """Generate subtask tokens using VLM autoregressive generation with KV caching.
         
         NOTE: The observation should contain the decomposition prompt already tokenized.
@@ -703,6 +731,7 @@ class Pi05(_model.BaseModel):
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
             eos_token_id: Token ID for end-of-sequence
+            debug_top_k: Number of top candidates to log per decode step (set <=0 to disable)
         Returns:
             List of generated token IDs (not including prompt tokens)
             List of boolean values indicating whether each generated token is a subtask token
@@ -711,11 +740,24 @@ class Pi05(_model.BaseModel):
             logger.log(level=103, msg=f"[HI-Robot] Generating subtask for prompt: {original_prompt}")
 
         batch_size = observation.tokenized_prompt.shape[0]
+
+        # logger.log(level=103, msg=f"[HI-Robot] Decoding tokenized_prompt: {original_prompt}")
+        
         
         # Get initial prefix embeddings (images + DECOMPOSITION prompt from observation)
         prefix_tokens_embedding, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        
+        logger.log(level=103, msg=f"[DEBUG] Prefix attn mask shape: {prefix_attn_mask.shape}")
+        # prefix_tokens_embedding, prefix_mask, prefix_attn_mask = left_to_right_align(prefix_tokens_embedding, prefix_mask, prefix_attn_mask)
+
+        prefill_size = prefix_tokens_embedding.shape[1] # How many tokens in the prefix, should be shape (batch_size, 200)
+        prefix_len = jnp.sum(prefix_mask, axis=-1) # How many tokens in the prefix (i.e not 0), should be shape (batch_size,)
+        text_len = jnp.sum(observation.tokenized_prompt_mask, axis=-1).astype(jnp.int32)
+        # Exclude image tokens from decode attention; allow only task text + generated tokens.
+        text_start = prefix_len.astype(jnp.int32) - text_len
+
         prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
         
         # Initial forward pass to get KV cache
@@ -724,113 +766,141 @@ class Pi05(_model.BaseModel):
             mask=prefix_attn_mask,
             positions=prefix_positions,
         )
-        last_embedding = prefix_out[:, -1:, :]
+        #kv_cache = jax.tree.map(lambda x: jnp.pad(x, ((0, 0), (0, 0), (0, 1), (0, 0), (0, 0))), kv_cache)
+        last_idx = jnp.clip(prefix_len.astype(jnp.int32) - 1, 0)
+        gather_idx = last_idx[:, None, None]
+        last_embedding = jnp.take_along_axis(prefix_out, gather_idx, axis=1)
         last_logits = self.PaliGemma.llm(last_embedding, method="decode")  
         last_logits = jax.nn.log_softmax(last_logits, axis=-1)  
-        output_tokens = jnp.zeros((batch_size, max_tokens))
-    
-        def step(carry): 
-            rng, last_logit, output_tokens, cache, _, step = carry
+        output_tokens = jnp.zeros((batch_size, max_tokens), dtype=jnp.int32)
+
+        
+        def fixed_prefix_mask(start_idx, end_idx, length:int, dtype=jnp.bool_) -> jnp.ndarray:
+            idx = jnp.arange(length)[None, None, :] 
+            return jnp.logical_and(
+                idx >= start_idx[:, None, None],
+                idx < end_idx[:, None, None]
+            ) # Creates array of True up to idx and False after
+
+        for step in range(max_tokens) :
             rng, rng_step = jax.random.split(rng)
+
+            if debug_top_k > 0:
+                k = min(debug_top_k, int(last_logits.shape[-1]))
+                top_log_probs, top_token_ids = jax.lax.top_k(last_logits[:, 0, :], k)
+                top_probs = jnp.exp(top_log_probs)
+                logger.log(
+                    level=103,
+                    msg=(
+                        f"[HI-Robot] Step {step}: top-{k} token IDs={top_token_ids[0].tolist()} "
+                        f"logp={[float(x) for x in top_log_probs[0]]} "
+                        f"p={[float(x) for x in top_probs[0]]}"
+                    ),
+                )
+
             token = jax.lax.cond(
                 temperature > 0,
-                lambda : jax.random.categorical(rng_step, last_logit / temperature, axis=-1),
-                lambda : jnp.argmax(last_logit, axis=-1),
-                operand=None
-            )
-            jnp.put_along_axis(output_tokens, jnp.broadcast_to(step, (token.shape[0], 1)), token)
+                lambda _: jax.random.categorical(rng_step, last_logits/ temperature, axis=-1),
+                lambda _: jnp.argmax(last_logits, axis=-1),
+                operand=None,
+            ) # (batch_size, 1)
 
+            output_tokens = jnp.put_along_axis(output_tokens, jnp.broadcast_to(step, (token.shape[0], 1)), token, axis=-1, inplace=False)
+            logger.log(level=103, msg=f"[HI-Robot] Step {step}: Generated token IDs: {token.flatten().tolist()}")
             eos = jnp.all(jnp.any(token == eos_token_id, axis=-1))
 
-            token_embedding = self.PaliGemma.llm(token, method="embed")
-            positions = jnp.array([[prefix_out.shape[1] + step]], dtype=jnp.int32)
-            attn_mask = jnp.ones((1, 1, prefix_out.shape[1] + step), dtype=jnp.bool_)
+            token_embedding = self.PaliGemma.llm(token, method="embed")  # (batch_size, 1, emb_dim)
+            positions = (prefix_len[:, ] + step + 1).reshape(batch_size, 1)  # (batch_size, 1)
+
+            mask_length = kv_cache[0].shape[2] + 1 # i.e. 968, 969, 970 ...             
+            end_idx = prefix_len + step + 1
+            mask = fixed_prefix_mask(jnp.zeros_like(end_idx), end_idx, mask_length) # (batch_size, 1, mask_length)
+            logger.log(level=103, msg=f"[DEBUG] Mask shape: {mask.shape}, Mask sample: {mask}")
             (prefix_out, _), kv_cache = self.PaliGemma.llm(
                 [token_embedding, None],
-                mask = attn_mask,
-                positions = positions,
-                kv_cache = cache
+                mask=mask,
+                positions=positions,
+                kv_cache=kv_cache,
+                adarms_cond=[None, None],
             )
-            last_embedding = prefix_out[:, -1:, :]
-            last_logit = self.PaliGemma.llm(last_embedding, method="decode")
-            last_logit = jax.nn.log_softmax(last_logit, axis=-1)
 
-            return rng, last_logit, output_tokens, kv_cache, eos, step + 1
+            last_embedding = prefix_out[:, -1:]
+            last_logits = self.PaliGemma.llm(last_embedding, method="decode")
+            last_logits = jax.nn.log_softmax(last_logits, axis=-1)
 
-        def cond(carry):
-            _, _, _, _, eos, step = carry
-            return (~eos) & (step < max_tokens)
-            
-
-        _, _, output_tokens, kv_cache, _, _ = jax.lax.while_loop(
-            cond, step, (rng, last_logits, output_tokens, kv_cache, False, 0)
-        )
-
-        mask = jnp.concatenate([prefix_mask, (output_tokens != 0)].astype(jnp.bool_), axis=1)
-        ar_mask = jnp.concatenate([prefix_ar_mask, jnp.array([True] * max_tokens)], axis=0)
-
-        return output_tokens, kv_cache, mask, ar_mask 
-
-
-
-        generated_tokens = []
-        
-        # Current sequence length (for position tracking)
-        current_length = prefix_tokens_embedding.shape[1]
-        
-        # Autoregressive generation loop with KV caching
-        for step in range(max_tokens):
-            # Get logits for the LAST position (which predicts the next token)
-            last_embedding = prefix_out[:, -1:, :]  # Shape: (batch, 1, emb_dim)
-            logits = jnp.einsum('bte,ve->btv', last_embedding, embedding_table)  # (batch, 1, vocab_size)
-            
-            if temperature > 0:
-                rng, sample_rng = jax.random.split(rng)
-                next_token_id = jax.random.categorical(
-                    sample_rng, logits[0, 0] / temperature
-                )
-            else:
-                # Greedy decoding
-                next_token_id = jnp.argmax(logits[0, 0])
-            
-            next_token_int = int(next_token_id)
-            
-            # Check for EOS token (1) or newline (108) to stop generation early
-            if next_token_int == 1 or next_token_int == 108:
-                if next_token_int == 1:
-                    logger.log(level=103, msg=f"[HI-Robot] EOS token reached at step {step}")
-                else:
-                    logger.log(level=103, msg=f"[HI-Robot] Newline token reached at step {step}")
+            if bool(eos): 
+                logger.log(level=103, msg=f"[HI-Robot] EOS token generated at step {step}. Stopping generation.")
+                
                 break
 
-            generated_tokens.append(next_token_int)
-            
-            # Embed the new token
-            next_token_embedding = self.PaliGemma.llm(
-                jnp.array([[next_token_int]]), method="embed"
-            )  # Shape: (1, 1, emb_dim)
-            
-            # Update position for the new token
-            next_position = jnp.array([[current_length]], dtype=jnp.int32)
-            current_length += 1
-            
-            # Create attention mask for new token (can attend to all previous tokens)
-            # New token attends to: all prefix tokens + all previously generated tokens + itself
-            new_attn_mask = jnp.ones((1, 1, current_length), dtype=jnp.bool_)
-            
-            # Forward pass for ONLY the new token, reusing KV cache
-            (new_out, _), kv_cache = self.PaliGemma.llm(
-                [next_token_embedding, None],
-                mask=new_attn_mask,
-                positions=next_position,
-                kv_cache=kv_cache,  # Reuse cached keys/values from previous tokens
-            )
-            
-            # Update prefix_out for next iteration
-            prefix_out = new_out
+
+        # Return token-level mask expected by policy (shape: batch, max_tokens).
+        eos_hits = output_tokens == eos_token_id
+        eos_cumsum = jnp.cumsum(eos_hits.astype(jnp.int32), axis=1)
+        generated_token_mask = (output_tokens != 0) & (eos_cumsum == 0)
+
+        return output_tokens, generated_token_mask
+
+
+
+        # generated_tokens = []
         
-        # logger.log(level=103, msg=f"[HI-Robot] Generated {len(generated_tokens)} tokens: {generated_tokens}")
-        generated_tokens_mask = [True] * len(generated_tokens) + [False] * (max_tokens - len(generated_tokens))
-        generated_tokens = generated_tokens + [0] * (max_tokens - len(generated_tokens))  # Pad to max_tokens with zeros
-        return generated_tokens, generated_tokens_mask
+        # # Current sequence length (for position tracking)
+        # current_length = prefix_tokens_embedding.shape[1]
+        
+        # # Autoregressive generation loop with KV caching
+        # for step in range(max_tokens):
+        #     # Get logits for the LAST position (which predicts the next token)
+        #     last_embedding = prefix_out[:, -1:, :]  # Shape: (batch, 1, emb_dim)
+        #     logits = jnp.einsum('bte,ve->btv', last_embedding, embedding_table)  # (batch, 1, vocab_size)
+            
+        #     if temperature > 0:
+        #         rng, sample_rng = jax.random.split(rng)
+        #         next_token_id = jax.random.categorical(
+        #             sample_rng, logits[0, 0] / temperature
+        #         )
+        #     else:
+        #         # Greedy decoding
+        #         next_token_id = jnp.argmax(logits[0, 0])
+            
+        #     next_token_int = int(next_token_id)
+            
+        #     # Check for EOS token (1) or newline (108) to stop generation early
+        #     if next_token_int == 1 or next_token_int == 108:
+        #         if next_token_int == 1:
+        #             logger.log(level=103, msg=f"[HI-Robot] EOS token reached at step {step}")
+        #         else:
+        #             logger.log(level=103, msg=f"[HI-Robot] Newline token reached at step {step}")
+        #         break
+
+        #     generated_tokens.append(next_token_int)
+            
+        #     # Embed the new token
+        #     next_token_embedding = self.PaliGemma.llm(
+        #         jnp.array([[next_token_int]]), method="embed"
+        #     )  # Shape: (1, 1, emb_dim)
+            
+        #     # Update position for the new token
+        #     next_position = jnp.array([[current_length]], dtype=jnp.int32)
+        #     current_length += 1
+            
+        #     # Create attention mask for new token (can attend to all previous tokens)
+        #     # New token attends to: all prefix tokens + all previously generated tokens + itself
+        #     new_attn_mask = jnp.ones((1, 1, current_length), dtype=jnp.bool_)
+            
+        #     # Forward pass for ONLY the new token, reusing KV cache
+        #     (new_out, _), kv_cache = self.PaliGemma.llm(
+        #         [next_token_embedding, None],
+        #         mask=new_attn_mask,
+        #         positions=next_position,
+        #         kv_cache=kv_cache,  # Reuse cached keys/values from previous tokens
+        #     )
+            
+        #     # Update prefix_out for next iteration
+        #     prefix_out = new_out
+        
+        # # logger.log(level=103, msg=f"[HI-Robot] Generated {len(generated_tokens)} tokens: {generated_tokens}")
+        # generated_tokens_mask = [True] * len(generated_tokens) + [False] * (max_tokens - len(generated_tokens))
+        # generated_tokens = generated_tokens + [0] * (max_tokens - len(generated_tokens))  # Pad to max_tokens with zeros
+        # return generated_tokens, generated_tokens_mask
 
