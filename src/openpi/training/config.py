@@ -1030,7 +1030,7 @@ _CONFIGS = [
         #     repo_ids=[
         #         # Each dataset can have a different sampling weight
         #         # Higher weight = more samples from this dataset during training
-        #         LeRobotDatasetConfig(repo_id="old_pickupcube", weight=1.0),
+        #         LeRobotDatasetConfig(repo_id="lerobot_pickupcube", weight=1.0),
         #         # LeRobotDatasetConfig(repo_id="lerobot_pickandplace", weight=1.0), 
         #     ],
         #     base_config=DataConfig(prompt_from_task=True),
