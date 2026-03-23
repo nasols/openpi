@@ -112,6 +112,14 @@ class Observation(Generic[ArrayT]):
 
     # Hierarchical mode specific fields (for HI-Robot).
     # Ground truth subtask tokens (the subtask text itself, e.g., "Pick up the red block").
+    subtask_loss_mask: at.Bool[ArrayT, "*b l"] | None = None   
+    subtask_token_mask: at.Bool[ArrayT, "*b l"] | None = None
+
+    # KI 
+    action_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
+    action_token_mask: at.Bool[ArrayT, "*b l"] | None = None
+
+    # DEP? 
     subtask_tokens: at.Int[ArrayT, "*b l"] | None = None
     subtask_mask: at.Bool[ArrayT, "*b l"] | None = None
     subtask_gt_tokens: at.Int[ArrayT, "*b l"] | None = None
@@ -135,6 +143,14 @@ class Observation(Generic[ArrayT]):
             state=data["state"],
             tokenized_prompt=data.get("tokenized_prompt"),
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
+
+            subtask_token_mask=data.get("subtask_token_mask"),
+            subtask_loss_mask=data.get("subtask_loss_mask"),
+
+            action_token_mask=data.get("action_token_mask"),
+            action_loss_mask=data.get("action_loss_mask"),
+
+            
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
             subtask_tokens=data.get("subtask_tokens"),
@@ -222,10 +238,18 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
-        subtask_tokens=observation.subtask_tokens,
-        subtask_mask=observation.subtask_mask,
-        subtask_gt_tokens=observation.subtask_gt_tokens,
-        subtask_gt_mask=observation.subtask_gt_mask,
+        
+        subtask_token_mask=observation.subtask_token_mask,
+        subtask_loss_mask=observation.subtask_loss_mask,
+
+        action_token_mask=observation.action_token_mask,
+        action_loss_mask=observation.action_loss_mask,
+        
+        
+        # subtask_tokens=observation.subtask_tokens,
+        # subtask_mask=observation.subtask_mask,
+        # subtask_gt_tokens=observation.subtask_gt_tokens,
+        # subtask_gt_mask=observation.subtask_gt_mask,
     )
 
 

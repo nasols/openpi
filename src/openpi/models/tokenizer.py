@@ -12,8 +12,10 @@ import openpi.shared.download as download
 
 import traceback, os
 
+logger = logging.getLogger("openpi")
+
 class PaligemmaTokenizer:
-    def __init__(self, max_len: int = 48, ki_mode:bool = False):
+    def __init__(self, max_len: int = 48, ki_mode:bool = False, hi_mode:bool=False):
         self._max_len = max_len
 
         # traceback.print_stack(limit=30)
@@ -24,14 +26,17 @@ class PaligemmaTokenizer:
 
         self._FAST_tokenizer = None 
         self._FAST_skip_tokens = 128
+        self.ki_mode = ki_mode
         if ki_mode: 
             self._FAST_tokenizer = AutoProcessor.from_pretrained("physical-intelligence/fast", trust_remote_code=True)
+        
+        self.hi_mode = hi_mode
 
     
     def _act_tokens_to_paligemma_tokens(self, tokens: np.ndarray | list[int]) -> np.ndarray:
         if isinstance(tokens, list):
             tokens = np.array(tokens)
-        return self._paligemma_tokenizer.vocab_size() - 1 - self._fast_skip_tokens - tokens
+        return self._tokenizer.vocab_size() - 1 - self._FAST_skip_tokens - tokens
         
 
     def tokenize(self, prompt: str, state: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
@@ -140,7 +145,7 @@ class PaligemmaTokenizer:
             state:np.ndarray, 
             subtask:str|None=None, 
             actions:np.ndarray|None=None
-        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Main function for tokenizing and building a full prompt for training. 
         Expects input to be strings, i.e. not tokenized. 
@@ -151,39 +156,59 @@ class PaligemmaTokenizer:
         'ar_mask'       - indicating which tokens should attend to which. True=causal attention, False=bidirectional attention. 
         'loss_mask'     - indicating which tokens should be included in loss calc. Are true for FAST tokens (if present) and tokens representing the subtask (if present)
         """
-
         cleaned_prompt = prompt.strip().replace("_", " ").replace("\n", " ")
-        cleaned_subtask = subtask.strip().replace("_", " ").replace("\n", " ")
 
         # ========= High level task building =========
         # ============================================
-        sub_prompt = f"Task: {cleaned_prompt}; State: {state}; Subtask: "
-        prompt_tokens = self._tokenizer.encode(sub_prompt, add_bos=True, add_eos=False)
-        ar_mask = [True]*len(prompt_tokens) # Causal attention for the main prompt up to subtask generation
-        loss_mask = [False]*len(prompt_tokens) # No loss on prompt and state tokens
-        subtask_token_mask = [False]*len(prompt_tokens) # Indicating that these tokens are not subtask tokens
-        action_token_mask = [False]*len(prompt_tokens) # Indicating that these tokens are not action tokens
-        token_mask = [True]*len(prompt_tokens) # Mask for all non-padding tokens
+        if self.hi_mode: 
+            sub_prompt = f"Task: {cleaned_prompt}; State: {state}; Subtask: "
+            prompt_tokens = self._tokenizer.encode(sub_prompt, add_bos=True, add_eos=False)
+            ar_mask = [True]*len(prompt_tokens) # Causal attention for the main prompt up to subtask generation
+            loss_mask = [False]*len(prompt_tokens) # No loss on prompt and state tokens
+            subtask_token_mask = [False]*len(prompt_tokens) # Indicating that these tokens are not subtask tokens
+            action_token_mask = [False]*len(prompt_tokens) # Indicating that these tokens are not action tokens
+            token_mask = [True]*len(prompt_tokens) # Mask for all non-padding tokens
+        
+        else: 
+            sub_prompt = f"Task: {cleaned_prompt}; State: {state};\nAction: "
+            prompt_tokens = self._tokenizer.encode(sub_prompt, add_bos=True, add_eos=False)
+            ar_mask = [True]*len(prompt_tokens) # Causal attention for the entire prompt including "Action: ".
+            loss_mask = [False]*len(prompt_tokens) # No loss on prompt and state tokens
+            subtask_token_mask = [False]*len(prompt_tokens) # Indicating that these tokens are not subtask tokens
+            action_token_mask = [False]*len(prompt_tokens) # Indicating that these tokens are not action tokens
+            token_mask = [True]*len(prompt_tokens) # Mask for all non-padding tokens
         # ============================================
         # ============================================
 
         # ========= Low level task building ==========
         # ============================================
-        subtask_tokens = self._tokenizer.encode(cleaned_subtask, add_bos=False, add_eos=False)
-        tokens = prompt_tokens + subtask_tokens # Now tokens looks like "Task: xxx; State: xxx; Subtask: xxx"
+        # If subtask is None, as in the case when using HI-mode but not yet generated subtask, we want to return the tokens for 
+        ## "Task:xxx; State: xxx; Subtask: " and the we run a pass to build the subtask. 
+        ## Post generating subtask, we use the inference function that runs at token level. 
+        if subtask is not None: # If subtask is not None, i.e. the string version of a subtask is given, we are training the model, the G.T subtask is given. 
+            cleaned_subtask = subtask.strip().replace("_", " ").replace("\n", " ")
+            subtask_tokens = self._tokenizer.encode(cleaned_subtask, add_bos=False, add_eos=False)
+            
+            tokens = prompt_tokens + subtask_tokens # Now tokens looks like "Task: xxx; State: xxx; Subtask: xxx"
+            ar_mask += [True]*len(subtask_tokens) # We have causal attention up to action prediction. 
+            subtask_loss_mask = loss_mask + [True]*len(subtask_tokens) # Loss on subtask tokens for subtask prediction
+            action_loss_mask = loss_mask + [False]*len(subtask_tokens) # No loss on subtask tokens for action prediction
+            subtask_token_mask = subtask_token_mask + [True]*len(subtask_tokens) # Mask indicating which tokens are subtask tokens
+            action_token_mask = action_token_mask + [False]*len(subtask_tokens) # Mask indicating which tokens are action tokens
+            token_mask += [True]*len(subtask_tokens) # Mask for all non-padding tokens
         
-        ar_mask += [True]*len(subtask_tokens) # We have causal attention up to action prediction. 
-        subtask_loss_mask = loss_mask + [True]*len(subtask_tokens) # Loss on subtask tokens for subtask prediction
-        action_loss_mask = loss_mask + [False]*len(subtask_tokens) # No loss on subtask tokens for action prediction
-        subtask_token_mask = subtask_token_mask + [True]*len(subtask_tokens) # Mask indicating which tokens are subtask tokens
-        action_token_mask = action_token_mask + [False]*len(subtask_tokens) # Mask indicating which tokens are action tokens
-        token_mask += [True]*len(subtask_tokens) # Mask for all non-padding tokens
+        elif subtask is None: 
+            tokens = prompt_tokens
+            subtask_loss_mask = loss_mask.copy()
+            action_loss_mask = loss_mask.copy()
+            
+
         # ============================================
         # ============================================
 
         # ========== Actions task building ===========
         # ============================================
-        if actions is None: # KI-Mode deactivated -- Inference ? 
+        if actions is None and subtask is not None: # KI-Mode deactivated -- Inference ? 
             # At this point, tokens looks like "Task: xxx; State: xxx; Subtask: xxx" and we are done with building the prompt. We can return the tokenized prompt and masks.
             # The tokenized prompt should not include the actions as we are running inference. 
             # Before this point we expect the model to have predicted a subtask and it is fed into this function. 
@@ -199,6 +224,7 @@ class PaligemmaTokenizer:
             token_mask += [True]*len(action_tokens) # Mask for all non-padding tokens
   
         elif actions is not None and self._FAST_tokenizer is not None: # KI-mode activated -- Training ?
+            
             # If we are training and KI-Mode is activated, we expect observation to include actions, i.e. continuous action vectors. 
             # We then tokenizre these using the FAST tokenizer and append these to the tokens and build loss masks. 
             # During inference in this function, actions will never be provided. Look to prior if statement. 
@@ -215,13 +241,21 @@ class PaligemmaTokenizer:
             action_token_mask += [True]*len(action_tokens) # Mask indicating which tokens are action tokens
             token_mask += [True]*len(action_tokens) # Mask for all non-padding tokens
 
+        # ============================================
+        # ============================================
+
+        # ================= Padding ==================
+        # ============================================
+            
+
         tokens_len = len(tokens)
         if tokens_len < self._max_len:
             padding = [False] * (self._max_len - tokens_len)
             tokens += padding
             token_mask += padding
             ar_mask += padding
-            loss_mask += padding
+            subtask_loss_mask += padding
+            action_loss_mask += padding
             subtask_token_mask += padding
             action_token_mask += padding
         else: 
@@ -233,27 +267,74 @@ class PaligemmaTokenizer:
             tokens = tokens[: self._max_len]
             token_mask = token_mask[: self._max_len]
             ar_mask = ar_mask[: self._max_len]
-            loss_mask = loss_mask[: self._max_len]
+            subtask_loss_mask = subtask_loss_mask[: self._max_len]
+            action_loss_mask = action_loss_mask[: self._max_len]
             subtask_token_mask = subtask_token_mask[: self._max_len]
             action_token_mask = action_token_mask[: self._max_len]
-        # ============================================
-        # ============================================
 
-        return tokens, token_mask, ar_mask, loss_mask, subtask_token_mask, action_token_mask
-    
-    def build_tokenized_prompt_inference(self, prompt:np.ndarray, state:np.ndarray, subtask:np.ndarray) -> any :
-        """
-        Main function for tokenizing and building a full prompt for inference. 
-        Expects input to be tokenized, i.e. arrays of tokens. 
-        During inference, the inputs would be tokenized as we dont de-tokenize the subtask after generation, we keep it at token-level. 
-        This function returns: 
-        'tokens'        - the full list of tokens representing the prompt, state, subtask and actions (depending on use case)
-        'token_mask'    - indicating tokens and padding, boolean list, True = token, False = padding. 
-        'ar_mask'       - indicating which tokens should attend to which. True=causal attention, False=bidirectional attention. 
-        'loss_mask'     - indicating which tokens should be included in loss calc. Are true for FAST tokens (if present) and tokens representing the subtask (if present)
-        """
+        assert len(tokens)              == self._max_len, "Arrays have to be of length max_len after padding/truncation"
+        assert len(token_mask)          == self._max_len, "Arrays have to be of length max_len after padding/truncation"
+        assert len(ar_mask)             == self._max_len, "Arrays have to be of length max_len after padding/truncation"
+        assert len(subtask_loss_mask)   == self._max_len, "Arrays have to be of length max_len after padding/truncation"
+        assert len(action_loss_mask)    == self._max_len, "Arrays have to be of length max_len after padding/truncation"
+        assert len(subtask_token_mask)  == self._max_len, "Arrays have to be of length max_len after padding/truncation"
+        assert len(action_token_mask)   == self._max_len, "Arrays have to be of length max_len after padding/truncation"
         
-        pass   
+        tokens = np.asarray(tokens)
+        token_mask = np.asarray(token_mask, dtype=bool)
+        ar_mask = np.asarray(ar_mask, dtype=int)
+        subtask_loss_mask = np.asarray(subtask_loss_mask)
+        action_loss_mask = np.asarray(action_loss_mask)
+        subtask_token_mask = np.asarray(subtask_token_mask)
+        action_token_mask = np.asarray(action_token_mask)
+
+        return tokens, token_mask, ar_mask, subtask_loss_mask, action_loss_mask, subtask_token_mask, action_token_mask
+    
+    def build_tokenized_prompt_inference(
+            self,
+            prompt_tokens: np.ndarray,
+            prompt_mask: np.ndarray,
+            subtask_tokens: np.ndarray,
+            subtask_mask: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Build action-generation prompt on token level for inference.
+
+        Expects:
+            - prompt_tokens/prompt_mask from decomposition prompt tokenization,
+              i.e. "Task: ...; State: ...; Subtask: "
+            - subtask_tokens/subtask_mask generated by subtask decoder.
+
+        Returns:
+            - tokens/token_mask for "Task: ...; State: ...; Subtask: <generated>;\nAction: "
+        """
+
+        prompt_tokens = np.asarray(prompt_tokens).reshape(-1)
+        prompt_mask = np.asarray(prompt_mask, dtype=bool).reshape(-1)
+        subtask_tokens = np.asarray(subtask_tokens).reshape(-1)
+        subtask_mask = np.asarray(subtask_mask, dtype=bool).reshape(-1)
+
+        prompt_valid = prompt_tokens[prompt_mask].tolist()
+        subtask_valid = subtask_tokens[subtask_mask].tolist()
+        action_tokens = self._tokenizer.encode("\nAction: ", add_bos=False, add_eos=True)
+
+        tokens = prompt_valid + subtask_valid + action_tokens
+        token_mask = [True] * len(tokens)
+
+        if len(tokens) < self._max_len:
+            pad = [0] * (self._max_len - len(tokens))
+            tokens += pad
+            token_mask += [False] * len(pad)
+        else:
+            if len(tokens) > self._max_len:
+                logging.warning(
+                    f"Token length ({len(tokens)}) exceeds max length ({self._max_len}), truncating. "
+                    "Consider increasing the `max_token_len` in your model config if this happens frequently."
+                )
+            tokens = tokens[: self._max_len]
+            token_mask = token_mask[: self._max_len]
+
+        return np.asarray(tokens), np.asarray(token_mask, dtype=bool)
 
 
 class FASTTokenizer:

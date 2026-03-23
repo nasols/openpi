@@ -273,6 +273,7 @@ class TokenizePrompt(DataTransformFn):
 class TokenizePromptHIKI(DataTransformFn):
     """
     Tokenizer model transform enabling hierarchical prompting and knowledge insulation.
+    Should handle all cases, i.e. when HI on/off and KI on/off.
     """
     tokenizer: _tokenizer.PaligemmaTokenizer
     discrete_state_input: bool = False
@@ -283,28 +284,47 @@ class TokenizePromptHIKI(DataTransformFn):
         subtask = data.pop("subtask", None)
         state = data.get("state", None)
 
-        if not isinstance(prompt, str):
+        logger.log(level=103, msg=f"[DEBUG] TokenizePromptHIKI; hi-mode: {self.tokenizer.hi_mode}, ki-mode: {self.tokenizer.ki_mode}")
+
+        if (not isinstance(prompt, str)) and (prompt is not None):
             prompt = prompt.item()
-        if not isinstance(subtask, str):
+        if (not isinstance(subtask, str)) and (subtask is not None):
             subtask = subtask.item()
+        if (not self.tokenizer.ki_mode) and (not self.tokenizer.hi_mode): 
+            logger.log(level=103, msg=f"[DEBUG] Running fallback tokenize (no HI, no KI).")
+            # We assume HI and KI to be off
+            tokens, token_masks = self.tokenizer.tokenize(prompt, state)
+            # Tokens are representing the tokenized version of "Task: xxx; State: xxx; Action: " for the non-HIKI case.
+            return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
 
         assert prompt is not None, "Prompt is required for HIKI tokenization."
-        assert subtask is not None, "Subtask is required for HIKI tokenization."
         assert state is not None, "State is required for HIKI tokenization."
+        # assert subtask is not None, "Subtask is required for HIKI tokenization."
 
         # If tokenizer has the FAST tokenizer attributie, it expects actions to be passed. Else, None is passed, as inference. 
         actions = data.get("actions", None) if self.tokenizer._FAST_tokenizer is not None else None 
         
-        tokens, token_mask, ar_mask, loss_mask, subtask_mask, action_mask = self.tokenizer.build_tokenized_prompt(prompt, state, subtask, actions)
+        tokens, token_mask, ar_mask, subtask_loss_mask, action_loss_mask, subtask_mask, action_mask = self.tokenizer.build_tokenized_prompt(prompt, state, subtask, actions)
         
+        # tokens are now representing the tokenized version of "Task: xxx; State: xxx; Subtask: xxx; Action: xxx" depending on the usecase. 
+        # Inference: "Task: xxx; State: xxx; Subtask: ". 
+        ## Then when subtask is predicted, it is added and the prompt is extended to "Task: xxx; State: xxx; Subtask: xxx; Action: ".
+
+        # Training with HI:         "Task: xxx; State: xxx; Subtask: xxx; Action: ".
+        # Training with KI:         "Task: xxx; State: xxx; Action: xxx".
+        # Training with HI and KI:  "Task: xxx; State: xxx; Subtask: xxx; Action: xxx".  
+        assert subtask_mask is not None, "Subtask mask is required for HIKI tokenization."
+        assert action_mask is not None, "Action mask is required for HIKI tokenization."
         return {
             **data, 
             "tokenized_prompt": tokens, 
             "tokenized_prompt_mask": token_mask, 
             "token_ar_mask": ar_mask,
-            "token_loss_mask": loss_mask,
-            "subtask_mask": subtask_mask,
-            "action_mask": action_mask
+            
+            "subtask_loss_mask": subtask_loss_mask,
+            "action_loss_mask": action_loss_mask,
+            "subtask_token_mask": subtask_mask,
+            "action_token_mask": action_mask
         }
 
     

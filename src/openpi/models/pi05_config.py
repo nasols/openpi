@@ -32,10 +32,10 @@ class Pi05Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
     # Knowledge insulation
-    knowledge_insulation: bool = False
+    ki_mode: bool = False
     ki_fast_loss_weight: float = 1.0
     # Hierarchical policy settings
-    hierarchical_mode : bool = False
+    hi_mode : bool = False
 
     def __post_init__(self):
         if self.max_token_len is None:
@@ -46,10 +46,10 @@ class Pi05Config(_model.BaseModelConfig):
     @property
     @override
     def model_type(self) -> _model.ModelType:
-        if self.knowledge_insulation:
-            return _model.ModelType.PI05_KI
-        elif self.hierarchical_mode:
-            return _model.ModelType.PI05_HI
+        # if self.knowledge_insulation:
+        #     return _model.ModelType.PI05_KI
+        # elif self.hierarchical_mode:
+        #     return _model.ModelType.PI05_HI
         return _model.ModelType.PI05
         
     @override

@@ -140,67 +140,75 @@ class ModelTransformFactory(GroupFactory):
                 )
             case _model.ModelType.PI05:
                 assert isinstance(model_config, pi05_config.Pi05Config)
-                return _transforms.Group(
-                    inputs=[
-                        _transforms.InjectDefaultPrompt(self.default_prompt),
-                        _transforms.ResizeImages(224, 224),
-                        _transforms.TokenizePrompt(
-                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
-                            discrete_state_input=model_config.discrete_state_input,
-                        ),
-                        _transforms.PadStatesAndActions(model_config.action_dim),
-                    ],
-                )
-            case _model.ModelType.PI05_KI:
-                assert isinstance(model_config, pi05_config.Pi05Config)
-                tokenizer_cls = _tokenizer.FASTTokenizer
-                   
-                return _transforms.Group(
-                    inputs=[
-                        _transforms.InjectDefaultPrompt(self.default_prompt),
-                        _transforms.ResizeImages(224, 224),
-                        # _transforms.TokenizePrompt(
-                        #     _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
-                        #     discrete_state_input=model_config.discrete_state_input,
-                        # ),
-                        _transforms.TokenizeFASTInputs(
-                            tokenizer_cls(model_config.max_token_len),
-                        ),
-                        _transforms.PadStatesAndActions(model_config.action_dim),
-                    ],
-                    # No output transform needed - KI model outputs actions directly
-                    # (uses FAST tokens + action expert internally)
-                )
-            
-            case _model.ModelType.PI05_HI: 
-                assert isinstance(model_config, pi05_config.Pi05Config)
-                return _transforms.Group(
-                    inputs=[
-                        _transforms.InjectDefaultPrompt(self.default_prompt),
-                        _transforms.ResizeImages(224, 224),
-                        _transforms.TokenizeHierarchicalPrompt(
-                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
-                        ),
-                        _transforms.PadStatesAndActions(model_config.action_dim),
-                    ],
-                    outputs=[]
-                )
-
-            case _model.ModelType.PI05_KI_HI: 
-                assert isinstance(model_config, pi05_config.Pi05Config)
                 
-                tokenizer = _tokenizer.PaligemmaTokenizer(model_config.max_token_len, ki_mode=model_config.knowledge_insulation)
+                hi_mode = model_config.hi_mode
+                ki_mode = model_config.ki_mode
+
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
                         _transforms.TokenizePromptHIKI(
-                            tokenizer,
+                            _tokenizer.PaligemmaTokenizer(
+                                model_config.max_token_len, 
+                                hi_mode=hi_mode, 
+                                ki_mode=ki_mode
+                                ),
                             discrete_state_input=model_config.discrete_state_input,
                         ),
                         _transforms.PadStatesAndActions(model_config.action_dim),
-                    ]
+                    ],
                 )
+            # case _model.ModelType.PI05_KI:
+            #     assert isinstance(model_config, pi05_config.Pi05Config)
+            #     tokenizer_cls = _tokenizer.FASTTokenizer
+                   
+            #     return _transforms.Group(
+            #         inputs=[
+            #             _transforms.InjectDefaultPrompt(self.default_prompt),
+            #             _transforms.ResizeImages(224, 224),
+            #             # _transforms.TokenizePrompt(
+            #             #     _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+            #             #     discrete_state_input=model_config.discrete_state_input,
+            #             # ),
+            #             _transforms.TokenizeFASTInputs(
+            #                 tokenizer_cls(model_config.max_token_len),
+            #             ),
+            #             _transforms.PadStatesAndActions(model_config.action_dim),
+            #         ],
+            #         # No output transform needed - KI model outputs actions directly
+            #         # (uses FAST tokens + action expert internally)
+            #     )
+            
+            # case _model.ModelType.PI05_HI: 
+            #     assert isinstance(model_config, pi05_config.Pi05Config)
+            #     return _transforms.Group(
+            #         inputs=[
+            #             _transforms.InjectDefaultPrompt(self.default_prompt),
+            #             _transforms.ResizeImages(224, 224),
+            #             _transforms.TokenizeHierarchicalPrompt(
+            #                 _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+            #             ),
+            #             _transforms.PadStatesAndActions(model_config.action_dim),
+            #         ],
+            #         outputs=[]
+            #     )
+
+            # case _model.ModelType.PI05_KI_HI: 
+            #     assert isinstance(model_config, pi05_config.Pi05Config)
+                
+            #     tokenizer = _tokenizer.PaligemmaTokenizer(model_config.max_token_len, ki_mode=model_config.knowledge_insulation)
+            #     return _transforms.Group(
+            #         inputs=[
+            #             _transforms.InjectDefaultPrompt(self.default_prompt),
+            #             _transforms.ResizeImages(224, 224),
+            #             _transforms.TokenizePromptHIKI(
+            #                 tokenizer,
+            #                 discrete_state_input=model_config.discrete_state_input,
+            #             ),
+            #             _transforms.PadStatesAndActions(model_config.action_dim),
+            #         ]
+            #     )
 
 
             case _model.ModelType.PI0_FAST:
@@ -668,10 +676,10 @@ class TrainConfig:
 
     # Knowledge Insulation settings
     knowledge_insulation_lambda: float = 1.0
-    knowledge_insulation : bool = False
+    ki_mode : bool = False
 
     # Hierarchical policy settings
-    hierarchical_mode : bool = False 
+    hi_mode : bool = False 
     
 
     @property
@@ -1039,7 +1047,9 @@ _CONFIGS = [
         name="pi05_droid_finetune",
         model=pi05_config.Pi05Config(
             action_dim=32,  # pi05 is trained with 32-dim actions
-            action_horizon=15,
+            action_horizon=15,  
+            ki_mode=True, 
+            hi_mode=False,
         ),
 
         # data=LeRobotDROIDDataConfig(
@@ -1060,7 +1070,7 @@ _CONFIGS = [
         #     ),
         # ),
         
-        data=LeRobotDROIDDataConfig(
+        data=HiRobotLeRobotDROIDDataConfig(
             # Use repo_ids instead of repo_id to specify multiple datasets
             repo_ids=[
                 # Each dataset can have a different sampling weight
@@ -1139,7 +1149,7 @@ _CONFIGS = [
         model=pi05_config.Pi05Config(
             action_dim=32,
             action_horizon=15, 
-            knowledge_insulation=True),
+            ki_mode=True),
         data=LeRobotDROIDDataConfig(
             repo_id="lerobot_pickupcube",
             base_config=DataConfig(prompt_from_task=True), 
@@ -1156,15 +1166,15 @@ _CONFIGS = [
         batch_size=32,
         fsdp_devices=2,
 
-        knowledge_insulation=True,
+        ki_mode=True,
     ),
     TrainConfig(
         name="pi05_droid_hi",
         model=pi05_config.Pi05Config(
             action_dim=32,
             action_horizon=15, 
-            knowledge_insulation=False, 
-            hierarchical_mode=True),
+            ki_mode=False, 
+            hi_mode=True),
         data=HiRobotLeRobotDROIDDataConfig(
             repo_id="lerobot_pickupcube",
             base_config=DataConfig(prompt_from_task=True), 
@@ -1180,9 +1190,35 @@ _CONFIGS = [
         # keep_period=2000,
         batch_size=32,
         fsdp_devices=2,
-        hierarchical_mode=True,
+        hi_mode=True,
 
-        knowledge_insulation=False,
+        ki_mode=False,
+    ),
+    TrainConfig(
+        name="pi05_droid_hi_ki",
+        model=pi05_config.Pi05Config(
+            action_dim=32,
+            action_horizon=15, 
+            ki_mode=False, 
+            hi_mode=True),
+        data=HiRobotLeRobotDROIDDataConfig(
+            repo_id="lerobot_pickupcube",
+            base_config=DataConfig(prompt_from_task=True), 
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+                asset_id="droid"
+            )
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        num_train_steps=2000 + 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
+        save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
+        log_interval=100,
+        # keep_period=2000,
+        batch_size=32,
+        fsdp_devices=2,
+        hi_mode=True,
+        ki_mode=True,
+        
     ),
     TrainConfig(
         # Example config demonstrating how to train on a mixture of multiple DROID datasets.
@@ -1237,25 +1273,23 @@ _CONFIGS = [
         name="debug",
         data=FakeDataConfig(),
         batch_size=2,
-        model=pi0_config.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy", knowledge_insulation=False),
+        model=pi0_config.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy"),
         save_interval=100,
         overwrite=True,
         exp_name="debug",
         num_train_steps=10,
         wandb_enabled=False,
-        knowledge_insulation = False,
     ),
     TrainConfig(
         name="debug_ki",
         data=FakeDataConfig(),
         batch_size=2,
-        model=pi0_config.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy", knowledge_insulation=True),
+        model=pi0_config.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy"),
         save_interval=100,
         overwrite=True,
         exp_name="debug",
         num_train_steps=10,
         wandb_enabled=False,
-        knowledge_insulation=True,
         
     ),
     TrainConfig(

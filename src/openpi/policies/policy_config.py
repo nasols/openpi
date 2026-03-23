@@ -12,6 +12,9 @@ from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
 import openpi.transforms as transforms
 
+from openpi.models.pi05_config import Pi05Config
+from openpi.models.pi05 import Pi05
+
 logger = logging.getLogger("openpi")
 
 
@@ -61,21 +64,20 @@ def create_trained_policy(
     weight_path = os.path.join(checkpoint_dir, "model.safetensors")
     is_pytorch = os.path.exists(weight_path)
 
+    assert isinstance(train_config.model, Pi05Config), "Expect a PI05 Config as we are"
+
     logger.info("Loading model...")
     if is_pytorch:
         model = train_config.model.load_pytorch(train_config, weight_path)
         model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
     else:
-        model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
+        model : Pi05  = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
     
-    logger.log(level=103, msg=f"[DEBUG] knowledge insulation setting in train_config: {train_config.knowledge_insulation}")
-    if train_config.knowledge_insulation:
-        model.knowledge_insulation = True
-        logger.log(level=103, msg="Enabling knowledge insulation in the trained policy.")
-    
-    if train_config.hierarchical_mode:
-        logger.log(level=103, msg="Enabling hierarchical mode in the trained policy.")
-        model.hierarchical_mode = True
+    if train_config.model.ki_mode:
+        model.ki_mode = train_config.model.ki_mode
+            
+    if train_config.model.hi_mode:
+        model.hi_mode = train_config.model.hi_mode
 
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
     if norm_stats is None:
@@ -116,10 +118,9 @@ def create_trained_policy(
         metadata=train_config.policy_metadata,
         is_pytorch=is_pytorch,
         pytorch_device=pytorch_device if is_pytorch else None,
-        hierarchical_mode=train_config.hierarchical_mode,
+        hi_mode=train_config.model.hi_mode,
+        ki_mode=train_config.model.ki_mode,
     )
     
-    if train_config.hierarchical_mode:
-        logger.log(level=103, msg=f"[HI-Robot] Hierarchical planning enabled ")
     
     return policy
