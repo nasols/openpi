@@ -120,6 +120,7 @@ def create_trained_policy(
         pytorch_device=pytorch_device if is_pytorch else None,
         hi_mode=train_config.model.hi_mode,
         ki_mode=train_config.model.ki_mode,
+        guided_inference=train_config.model.guided_inference
     )
     
     

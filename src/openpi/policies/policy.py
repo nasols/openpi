@@ -43,6 +43,7 @@ class Policy(BasePolicy):
         is_pytorch: bool = False,
         hi_mode: bool = False,
         ki_mode: bool = False,
+        guided_inference: bool = False,
   
     ):
         """Initialize the Policy.
@@ -77,10 +78,19 @@ class Policy(BasePolicy):
         self._step_count = 6
         self._completion_threshold = 0.8  # Similarity threshold for subtask completion                              
 
+        # Action chunking -- guided inference 
+        self._guided_inference = guided_inference
+        self._previous_action_chunk = None
+
         if True: #self._hi_mode: 
             self._tokenizer = _tokenizer.PaligemmaTokenizer(max_len=model.max_token_len) 
 
-        if self._is_pytorch_model:
+        if self._guided_inference: 
+            assert isinstance(self._model, Pi05), "Guided inference is currently only supported for Pi05 models."
+            logger.log(level=103, msg=f"[DEBUG] Initializing guided inference with model: {self._model}")
+            self._sample_actions = nnx_utils.module_jit(model.guided_inference)
+            self._rng = rng or jax.random.key(0)
+        elif self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
             self._model.eval()
             self._sample_actions = model.sample_actions
@@ -158,7 +168,23 @@ class Policy(BasePolicy):
 
         
         start_time = time.monotonic()
-        actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+        
+        if self._guided_inference:
+            logger.log(level=103, msg=f"[DEBUG] Guided inference enabled. Previous action chunk: {self._previous_action_chunk}")
+            # For guided inference, we pass the previous action chunk to the model to condition the next predictions.
+            # This is a simple form of auto-regressive decoding where we generate actions in chunks.
+    
+            d = 4
+            s=5                
+
+            actions = self._sample_actions(sample_rng_or_pytorch_device, observation, d, s, self._previous_action_chunk, **sample_kwargs)
+
+            # Update previous action chunk for next inference call
+            self._previous_action_chunk = actions[:, :self._model.action_horizon // 2, :]  # Replace the // 2 by the parameters given in the paper
+        else: 
+            actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+        
+        
         outputs = {
             "state": inputs["state"],
             "actions": actions,

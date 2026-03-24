@@ -36,6 +36,8 @@ class Pi05Config(_model.BaseModelConfig):
     ki_fast_loss_weight: float = 1.0
     # Hierarchical policy settings
     hi_mode : bool = False
+    # Guided inference
+    guided_inference: bool = False
 
     def __post_init__(self):
         if self.max_token_len is None:

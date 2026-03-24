@@ -301,11 +301,11 @@ if __name__ == "__main__":
     # test_pi05.test_inference()
     # ta = time.time()
     # print(f"Inference time: {ta - tb:.2f} seconds")
-
-    tb = time.time()
-    test_pi05.test_compute_loss()
-    ta = time.time()
-    print(f"Compute loss time: {ta - tb:.2f} seconds")
+    for i in range(3): 
+        tb = time.time()
+        test_pi05.test_inference()
+        ta = time.time()
+        print(f"Compute loss time: {ta - tb:.2f} seconds")
 
     # create_torch_dataset(
     #     test_pi05.config.data.create(test_pi05.config.assets_dirs, test_pi05.config.model),
