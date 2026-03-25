@@ -229,7 +229,6 @@ def preprocess_observation(
             out_masks[key] = jnp.asarray(observation.image_masks[key])
 
 
-
     return Observation(
         images=out_images,
         image_masks=out_masks,

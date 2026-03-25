@@ -124,6 +124,11 @@ class Policy(BasePolicy):
                 noise = noise[None, ...]  # Make it (1, action_horizon, action_dim)
             sample_kwargs["noise"] = noise
 
+        if self._guided_inference: 
+            sample_kwargs["d"] = 4
+            sample_kwargs["s"] = 5
+            sample_kwargs["A_prev"] = self._previous_action_chunk
+
         observation = _model.Observation.from_dict(inputs)
         
         ### HIERARCHICAL PLANNING ###
@@ -168,27 +173,18 @@ class Policy(BasePolicy):
 
         
         start_time = time.monotonic()
+
+        actions, hist = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+
         
         if self._guided_inference:
-            logger.log(level=103, msg=f"[DEBUG] Guided inference enabled. Previous action chunk: {self._previous_action_chunk}")
-            # For guided inference, we pass the previous action chunk to the model to condition the next predictions.
-            # This is a simple form of auto-regressive decoding where we generate actions in chunks.
-    
-            d = 4
-            s=5                
-
-            actions = self._sample_actions(sample_rng_or_pytorch_device, observation, d, s, self._previous_action_chunk, **sample_kwargs)
-
-            # Update previous action chunk for next inference call
-            self._previous_action_chunk = actions[:, :self._model.action_horizon // 2, :]  # Replace the // 2 by the parameters given in the paper
-        else: 
-            actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+            self._previous_action_chunk = actions[:, :self._model.action_horizon // 2, :8]  # Replace the // 2 by the parameters given in the paper, magic number 8 here is action dimension. 
         
         
         outputs = {
             "state": inputs["state"],
             "actions": actions,
-            # "hist": hist,
+            "hist": hist,
         }
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
@@ -200,7 +196,7 @@ class Policy(BasePolicy):
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }
-        # outputs['hist'] = hist
+        outputs['hist'] = hist
         return outputs
 
     @property
@@ -218,7 +214,6 @@ class Policy(BasePolicy):
 
         return True 
 
-    
     def reset_hierarchical_state(self):
         """Reset hierarchical planning state (call between episodes)."""
         self._current_subtask = None

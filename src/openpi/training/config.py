@@ -1349,6 +1349,9 @@ class PolicyConfig: # Can be expanded with KI and HI pipelines
             return pathlib.Path(f"/media/ril_mtplab/HDD 2TB/vla/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
 
         else: 
+            if self.config_name == "pi05_droid_finetune": # Hack, fallback to using base checkpoint dir.
+                return f"gs://openpi-assets/checkpoints/pi05_droid"
+                
             return f"gs://openpi-assets/checkpoints/{self.config_name}"
     @property
     def get_assets_dir(self): 
@@ -1363,7 +1366,8 @@ def get_policy_config(config_name:str, exp_name:str|None=None, checkpoint:str|No
     pc = PolicyConfig(
         config_name=config_name, 
         exp_name=exp_name,
-        checkpoint=checkpoint)
+        checkpoint=checkpoint
+    )
 
     return pc
 
