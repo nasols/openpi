@@ -23,6 +23,7 @@ from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 from openpi.models import tokenizer as _tokenizer
 from openpi.models.pi05 import Pi05
+from openpi.models.pi05 import _gen_sample_action
 
 import copy
 
@@ -81,13 +82,15 @@ class Policy(BasePolicy):
         # Action chunking -- guided inference 
         self._guided_inference = guided_inference
         self._previous_action_chunk = None
+        self.s = 5
+        self.d = 4
+        self.j = 0
 
         if True: #self._hi_mode: 
             self._tokenizer = _tokenizer.PaligemmaTokenizer(max_len=model.max_token_len) 
 
         if self._guided_inference: 
             assert isinstance(self._model, Pi05), "Guided inference is currently only supported for Pi05 models."
-            logger.log(level=103, msg=f"[DEBUG] Initializing guided inference with model: {self._model}")
             self._sample_actions = nnx_utils.module_jit(model.guided_inference)
             self._rng = rng or jax.random.key(0)
         elif self._is_pytorch_model:
@@ -125,9 +128,12 @@ class Policy(BasePolicy):
             sample_kwargs["noise"] = noise
 
         if self._guided_inference: 
-            sample_kwargs["d"] = 4
-            sample_kwargs["s"] = 5
-            sample_kwargs["A_prev"] = self._previous_action_chunk
+
+            sample_kwargs["d"] = self.d
+            sample_kwargs["s"] = self.s
+            sample_kwargs["j"] = self.j
+            # self._previous_action_chunk = _gen_sample_action(action_horizon=15, action_dim=32)
+            sample_kwargs["A_prev"] = self._previous_action_chunk[:, self.s:, :] if self._previous_action_chunk is not None else None  
 
         observation = _model.Observation.from_dict(inputs)
         
@@ -177,8 +183,8 @@ class Policy(BasePolicy):
         actions, hist = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
 
         
-        if self._guided_inference:
-            self._previous_action_chunk = actions[:, :self._model.action_horizon // 2, :8]  # Replace the // 2 by the parameters given in the paper, magic number 8 here is action dimension. 
+        if self._guided_inference: 
+            self._previous_action_chunk = actions  # Replace the // 2 by the parameters given in the paper, magic number 8 here is action dimension. 
         
         
         outputs = {

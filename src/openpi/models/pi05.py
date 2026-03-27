@@ -8,6 +8,8 @@ import jax.numpy as jnp
 import optax
 from typing_extensions import override
 import numpy as np 
+from typing import Generic, TypeVar
+import torch
 
 from openpi.models import model as _model
 from openpi.models import pi0_config
@@ -20,13 +22,15 @@ from openpi import transforms as _transforms
 
 from functools import partial
 
+ArrayT = TypeVar("ArrayT", bound=jax.Array | torch.Tensor | np.ndarray)
+
 
 
 logger = logging.getLogger("openpi")
 
 def _gen_sample_action(action_horizon, action_dim) -> _model.Actions:
         t = jnp.arange(action_horizon)
-        action = -jnp.sin((t / action_horizon) * (jnp.pi/2)) 
+        action = 0.5-jnp.sin((t / action_horizon) * (jnp.pi/2)) 
         action = jnp.broadcast_to(action[None, :, None], (1, action_horizon, action_dim))
         return action
 
@@ -113,6 +117,9 @@ def posemb_sincos(
 
 
 class Pi05(_model.BaseModel):
+    """
+    Class for the Pi_0.5 model!!
+    """
     def __init__(self, config: pi05_config.Pi05Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = True
@@ -746,7 +753,7 @@ class Pi05(_model.BaseModel):
             # noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
             
             # noise = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
-            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))*0.1
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))*1
             # noise = noise.at[:, :3, 6].set(0.0)
 
             # pattern = jnp.where(
@@ -901,22 +908,27 @@ class Pi05(_model.BaseModel):
             noise: at.Float[at.Array, "b ah ad"] | None = None,
             d: int | at.Int[at.Array, ""] = 4,
             s: int | at.Int[at.Array, ""] = 5,
-            A_prev: _model.Actions | None = None,
+            j: int | at.Int[at.Array, ""] = 2,
+            A_prev: at.Float[ArrayT, ""] | None = None,
 
     ): 
         """
-        TODO: Fix attention to correct prev actions and future ones 
+        Implementation of real-time chunking from physical intelligence paper. 
+        
+        ## Args: 
+        - d : number of actions that are executed during the time it takes to run inference 
+        - s : number of actions that are executed before new inference run starts
+        - j : number of actions from the previous action chunk that are pinned when predicting the new chunk 
+        - A_prev : the previous action chunk sliced by [:, s:, :] 
         """
-        # Passed observation is assumed to be preprocessed 
+        
+        observation = _model.preprocess_observation(None, observation, train=False)
         batch_size = observation.state.shape[0]
         dt = -1.0 / num_steps
-
-        if noise is None:
-            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
-
         H = self.action_horizon 
         i = jnp.arange(H) # Time steps within the action horizon
 
+        ## Building soft-maxing weights ###
         ci = jnp.where(
             jnp.logical_and(i >= d, i < H-s), 
             (H-s-i) / (H-s-d+1), 
@@ -931,27 +943,66 @@ class Pi05(_model.BaseModel):
                 0.0                                                     # 0 for i >= H - s
             )
         )
+        ##################################
 
-        A_prev = None # Debugging, we set prev-action for testing purposes
+        ### Handle A_prev ###
         if A_prev is None:
-            A_prev = _gen_sample_action(self.action_horizon, self.action_dim) # Shape (action_horizon, action_dim)
-            # A_prev = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
-            # W = jnp.zeros_like(W) # If no previous actions, set weights to zero to disable guidance
+            A_prev = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
+            W = jnp.zeros_like(W) # If no previous actions, set weights to zero to disable guidance
+
         else: 
             A_prev = jnp.asarray(A_prev)
 
-
-
         pad_width = max(0, H - A_prev.shape[1]) # Calculate how much padding is needed if A_prev has fewer than H steps
         A_prev = jnp.pad(A_prev, ((0,0), (0,pad_width), (0, 0))) # Right-pad A_prev with zeros to be H-length 
-        assert A_prev.shape == (batch_size, self.action_horizon, self.action_dim)
+        #####################
+
+        if noise is None:
+            t = jnp.arange(self.action_horizon) 
+            # noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+            
+            # noise = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
+
+            ## SCALED RANDOM NORMAL NOISE ##
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))*1
+            
+            ## PINNING NOISE TO ZERO ##
+            # noise = noise.at[:, :, 6].set(
+            #     jnp.where(
+            #         (t<s),          # mask 
+            #         0.0,            # If true  
+            #         noise[:, :, 6]  # If fale 
+            #     )
+            # )
+
+            ## PINNING NOISE TO PREV ACTION BEGINNING ## 
+            # noise = noise.at[:, :, 6].set(
+            #     jnp.where(
+            #         t < j,               # mask
+            #         A_prev[:, :, 6],        # if true
+            #         noise[:, :, 6]          # if false
+            #         )
+            #     ) 
+            
+            ## SPECIFIC NOISE PATTERN ## 
+            # pattern = jnp.where(
+            #     jnp.arange(self.action_horizon) % 2 == 0,
+            #     -1.0,
+            #     1.0
+            # )
+
+            # alternating_arr = jnp.broadcast_to(
+            #     pattern[None, :, None],
+            #     (batch_size, self.action_horizon, self.action_dim)
+            # )
+            # noise += alternating_arr
+
 
         # first fill KV cache with a forward pass of the prefix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
-
 
         def step(carry, _):
             x_t, time = carry 
@@ -989,6 +1040,16 @@ class Pi05(_model.BaseModel):
             v_corrected = v_t - guidance_weight * pinv_correction
 
             x_t = x_t + dt * v_corrected
+            
+            # Pinning each prediction to the previous action chunk ## 
+            t = jnp.arange(self.action_horizon)
+            x_t = x_t.at[:, :, :].set(
+                jnp.where(
+                    (t < j)[None, :, None], 
+                    A_prev[:, :, :],    # if true, we set to the previous action
+                    x_t[:, :, :]       # if false, we keep the denoised action
+                )
+            )
             time += dt
 
             # values to record
