@@ -30,10 +30,27 @@ logger = logging.getLogger("openpi")
 
 def _gen_sample_action(action_horizon, action_dim) -> _model.Actions:
         t = jnp.arange(action_horizon)
-        action = 0.5-jnp.sin((t / action_horizon) * (jnp.pi/2)) 
+        action = -jnp.sin((t / action_horizon) * (jnp.pi/2)) 
         action = jnp.broadcast_to(action[None, :, None], (1, action_horizon, action_dim))
         return action
 
+def _noise_around_action(action, rng : at.KeyArrayLike): 
+    """
+    Given a action chunk we produce noise patterns around it. 
+    The noise pattern is a normal distribution with mean at the action chunk and a fixed or varying standard deviation. 
+    If varying, we increase the deviation over time, i.e. at the beginning of the action chunk we have low noise and at the end we have high noise.
+    """
+
+    action_horizon = action.shape[1]
+    action_dim = action.shape[2]
+    t = jnp.arange(action_horizon)
+    
+    noise = jax.random.normal(rng, action.shape) 
+    time_weights = (t / action_horizon) * 0.5 + 0.1 # Linearly increasing weights from 0.1 to 0.6
+    noise = noise * time_weights[None, :, None] # Scale noise by time weights
+    x_t = action + noise
+
+    return x_t
 
 def make_attn_mask(input_mask, mask_ar):
     """Adapted from big_vision.
@@ -99,11 +116,14 @@ def _pack_sequence_by_first_true(tokens, mask):
 
 @at.typecheck
 def posemb_sincos(
-    pos: at.Real[at.Array, " b"], embedding_dim: int, min_period: float, max_period: float
-) -> at.Float[at.Array, "b {embedding_dim}"]:
+    pos: at.Real[at.Array, " b *ad"], embedding_dim: int, min_period: float, max_period: float
+) -> at.Float[at.Array, "*b {embedding_dim}"]:
     """Computes sine-cosine positional embedding vectors for scalar positions."""
     if embedding_dim % 2 != 0:
         raise ValueError(f"embedding_dim ({embedding_dim}) must be divisible by 2")
+
+    if pos.ndim == 2: 
+        pos = jnp.squeeze(pos)
 
     fraction = jnp.linspace(0.0, 1.0, embedding_dim // 2)
     period = min_period * (max_period / min_period) ** fraction
@@ -166,6 +186,9 @@ class Pi05(_model.BaseModel):
 
         # Debugging purpose - should be removed later due to overhead 
         self.tokenizer = _tokenizer.PaligemmaTokenizer(max_len=self.config.max_token_len)
+
+        # Guided inference
+        self.max_delay = 5
 
     def _compute_fast_loss(
         self, 
@@ -316,29 +339,33 @@ class Pi05(_model.BaseModel):
 
     @at.typecheck
     def embed_suffix(
-        self, obs: _model.Observation, noisy_actions: _model.Actions, timestep: at.Float[at.Array, " b"]
+        self, obs: _model.Observation, noisy_actions: _model.Actions, timestep: at.Float[at.Array, " b *ad"]
     ) -> tuple[
         at.Float[at.Array, "b s emb"],
         at.Bool[at.Array, "b s"],
         at.Bool[at.Array, " s"],
-        at.Float[at.Array, "b emb"] | None,
+        at.Float[at.Array, "b *ad emb"] | None, # Allows adarms to be shaped [b, ad, emb], i.e. (batch, 15, 1024) for per-token time embedding.
     ]:
         input_mask = []
         ar_mask = []
         tokens = []
+        b = noisy_actions.shape[0] if len(noisy_actions.shape) == 3 else 1
+        embed_dim = self.action_in_proj.out_features
         
         action_tokens = self.action_in_proj(noisy_actions)
         # embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
-        time_emb = posemb_sincos(timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0)
-       
+        time_emb = posemb_sincos(timestep, embed_dim, min_period=4e-3, max_period=4.0)
+        
         # time MLP (for adaRMS)
         time_emb = self.time_mlp_in(time_emb)
         time_emb = nnx.swish(time_emb)
         time_emb = self.time_mlp_out(time_emb)
         time_emb = nnx.swish(time_emb)
         action_expert_tokens = action_tokens
-        adarms_cond = time_emb
+        adarms_cond = time_emb 
+
        
+       # CONTINUE: Check time shape when not running guided inference. Or in normal mode. Seems to have too large shape 
         tokens.append(action_expert_tokens)
         input_mask.append(jnp.ones(action_expert_tokens.shape[:2], dtype=jnp.bool_))
         # image/language/state inputs do not attend to action tokens
@@ -346,6 +373,7 @@ class Pi05(_model.BaseModel):
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
+        adarms_cond = adarms_cond.reshape(tokens.shape)
         return tokens, input_mask, ar_mask, adarms_cond
     
     @override
@@ -705,18 +733,68 @@ class Pi05(_model.BaseModel):
             # If both hi and ki enabled, we expect the prompt in obs to look like "Task: {task}; State: {state}; Subtask: {subtask};\n Action: {FAST tokens}" with masks indicating which tokens are the subtask and which are the FAST tokens.
             # We here compute loss over both subtask and FAST tokens, and the tokens in both cases are produced autoregressively. 
             pass 
+        
+        elif self.config.guided_inference: 
+            logger.log(level=103, msg="[DEBUG] Computing guided inference loss.")
+            batch_shape = actions.shape[:-2]
+            preprocess_rng, noise_rng, time_rng, delay_rng = jax.random.split(rng, 4)
+            delay = jax.random.randint(delay_rng, batch_shape, 0, self.max_delay)
+            observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
+            noise = jax.random.normal(noise_rng, actions.shape)
+            time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001 # Returns one value for time.
+            u_t = noise - actions
+
+            prefix_action_mask = jnp.arange(self.action_horizon)[None, :] < delay[:, None]
+            time_expanded = time[..., None, None]
+            time = jnp.where(prefix_action_mask, 0.0, time)  # Creates array where the first "delay" actions have time=1 (no noise) and the rest have the sampled time value. 
+            
+            x_t = time_expanded * noise + (1 - time_expanded) * actions
+            prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
+            input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+            ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+            attn_mask = make_attn_mask(input_mask, ar_mask)
+            positions = jnp.cumsum(input_mask, axis=1) - 1
+
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
+            )
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            loss = jnp.square(v_t - u_t)
+            postfix_action_mask = ~prefix_action_mask[:, :, None]
+            logger.log(level=103, msg=f"[DEBUG] Delay: {delay}, Time: {time}, Prefix action mask: {prefix_action_mask}, Postfix action mask: {postfix_action_mask}")
+            jax.debug.print(f"[DEBUG] Delay: {delay}, Time: {time}, Prefix action mask: {prefix_action_mask}, Postfix action mask: {postfix_action_mask}")
+            loss = jnp.sum(loss*postfix_action_mask) / (jnp.sum(postfix_action_mask) + 1e-8) # computing the mean over only the action postfix tokens, i.e. the predicted tokens
+            return loss 
+
+
 
         else: 
             preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
             observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
-
+            """
+            Explaination of the following code: 
+            First they generate noise in the shape of the action. 
+            Then they add noise to that action acording to the sampled time, so x_t is a noised action at some time between 1.0 and 0.0. 1 is noise. 
+            Then u_t is produced, which is the desired velocity to predict.  
+            """
             batch_shape = actions.shape[:-2]
             noise = jax.random.normal(noise_rng, actions.shape)
             time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
             time_expanded = time[..., None, None]
+            time = jnp.repeat(time_expanded, self.action_horizon).reshape(1,-1)
+            logger.log(level=103, msg=f"[DEBUG] Time shape: {time.shape}")
             x_t = time_expanded * noise + (1 - time_expanded) * actions
             u_t = noise - actions
 
+            """
+            Explaination of the following code:
+            They embed the prefix (images + tokenized prompt + state) and the suffix (noisy actions + time).
+            They then create attention masks, indicating which tokens are tokens and not padding, autoregressive mask indicating which tokens can attend to other tokens (previous ones), and then combine these to create the full attention mask.
+            Positions are the indicies of the actual tokens. So if the input_mask is [1, 1, 1, 0, 0] the positions become [1, 2, 3, 3, 3]-1 = [0, 1, 2, 2, 2]. So the tokens have index 0, 1, 2. We here do assume right padding.
+            We call on the Paligemma LLM using both the backbone (prefix) and the action expert (suffix) to generate suffix_out, which we further use to generate our velocity field v_t trough a linear projection. 
+            This v_t is the prediction we want to match u_t. 
+            """
             prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
             input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
@@ -908,7 +986,7 @@ class Pi05(_model.BaseModel):
             noise: at.Float[at.Array, "b ah ad"] | None = None,
             d: int | at.Int[at.Array, ""] = 4,
             s: int | at.Int[at.Array, ""] = 5,
-            j: int | at.Int[at.Array, ""] = 2,
+            j: int | at.Int[at.Array, ""] = 0,
             A_prev: at.Float[ArrayT, ""] | None = None,
 
     ): 
@@ -923,6 +1001,7 @@ class Pi05(_model.BaseModel):
         """
         
         observation = _model.preprocess_observation(None, observation, train=False)
+        
         batch_size = observation.state.shape[0]
         dt = -1.0 / num_steps
         H = self.action_horizon 
@@ -964,7 +1043,9 @@ class Pi05(_model.BaseModel):
             # noise = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
 
             ## SCALED RANDOM NORMAL NOISE ##
+
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))*1
+            # noise = _noise_around_action(A_prev, rng)
             
             ## PINNING NOISE TO ZERO ##
             # noise = noise.at[:, :, 6].set(
@@ -976,13 +1057,17 @@ class Pi05(_model.BaseModel):
             # )
 
             ## PINNING NOISE TO PREV ACTION BEGINNING ## 
-            # noise = noise.at[:, :, 6].set(
+            pin_mask = (t < j)[None, :, None] # Shape (1, action_horizon, 1) with True for indices < j
+            # noise = noise.at[:, :, :].set(
             #     jnp.where(
-            #         t < j,               # mask
-            #         A_prev[:, :, 6],        # if true
-            #         noise[:, :, 6]          # if false
+            #         pin_mask,                  # mask
+            #         A_prev[:, :, :],        # if true
+            #         noise[:, :, :]          # if false
             #         )
             #     ) 
+
+            noise = jnp.where(pin_mask, A_prev, noise) 
+        
             
             ## SPECIFIC NOISE PATTERN ## 
             # pattern = jnp.where(
@@ -996,6 +1081,7 @@ class Pi05(_model.BaseModel):
             #     (batch_size, self.action_horizon, self.action_dim)
             # )
             # noise += alternating_arr
+
 
 
         # first fill KV cache with a forward pass of the prefix
@@ -1039,17 +1125,14 @@ class Pi05(_model.BaseModel):
             guidance_weight = jnp.minimum(c / r2, 5.0) # Guidance weight with a max cap to prevent extreme values
             v_corrected = v_t - guidance_weight * pinv_correction
 
-            x_t = x_t + dt * v_corrected
             
             # Pinning each prediction to the previous action chunk ## 
             t = jnp.arange(self.action_horizon)
-            x_t = x_t.at[:, :, :].set(
-                jnp.where(
-                    (t < j)[None, :, None], 
-                    A_prev[:, :, :],    # if true, we set to the previous action
-                    x_t[:, :, :]       # if false, we keep the denoised action
-                )
-            )
+            pin_mask = (t < j)[None, :, None] # Shape (1, action_horizon, 1) with True for indices < j
+            v_corrected = jnp.where(pin_mask, 0.0, v_corrected)
+            x_t = x_t + dt * v_corrected
+            x_t = jnp.where(pin_mask, A_prev, x_t)
+
             time += dt
 
             # values to record

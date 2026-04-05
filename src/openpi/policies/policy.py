@@ -82,9 +82,7 @@ class Policy(BasePolicy):
         # Action chunking -- guided inference 
         self._guided_inference = guided_inference
         self._previous_action_chunk = None
-        self.s = 5
-        self.d = 4
-        self.j = 0
+
 
         if True: #self._hi_mode: 
             self._tokenizer = _tokenizer.PaligemmaTokenizer(max_len=model.max_token_len) 
@@ -103,7 +101,7 @@ class Policy(BasePolicy):
             self._rng = rng or jax.random.key(0)
 
     @override
-    def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
+    def infer(self, obs: dict, *, noise: np.ndarray | None = None, s: int|None=None, d:int|None=None, j:int|None=None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
@@ -128,13 +126,16 @@ class Policy(BasePolicy):
             sample_kwargs["noise"] = noise
 
         if self._guided_inference: 
-
-            sample_kwargs["d"] = self.d
-            sample_kwargs["s"] = self.s
-            sample_kwargs["j"] = self.j
-            # self._previous_action_chunk = _gen_sample_action(action_horizon=15, action_dim=32)
-            sample_kwargs["A_prev"] = self._previous_action_chunk[:, self.s:, :] if self._previous_action_chunk is not None else None  
-
+            assert d is not None and s is not None, "Neither d nor s can be none when using guided inference"
+            print("[DEBUG] Running guided inference")
+            sample_kwargs["d"] = d
+            sample_kwargs["s"] = s
+            sample_kwargs["j"] = j
+            #self._previous_action_chunk = _gen_sample_action(action_horizon=15, action_dim=32)
+            sample_kwargs["A_prev"] = self._previous_action_chunk[:, s:, :] if self._previous_action_chunk is not None else None  
+            # logger.log(level=103, msg=f"[DEBUG] Inference: Using guided inference with previous action chunk shape: {sample_kwargs['A_prev']}")
+        else: 
+            print("[DEBUG] Not running guided inference")
         observation = _model.Observation.from_dict(inputs)
         
         ### HIERARCHICAL PLANNING ###
@@ -184,7 +185,7 @@ class Policy(BasePolicy):
 
         
         if self._guided_inference: 
-            self._previous_action_chunk = actions  # Replace the // 2 by the parameters given in the paper, magic number 8 here is action dimension. 
+            self._previous_action_chunk = actions   
         
         
         outputs = {
