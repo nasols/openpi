@@ -15,7 +15,7 @@ from openpi.policies import policy_config
 from openpi.training.data_loader import create_torch_dataset, MixedDataset
 from scripts.compute_norm_stats import create_torch_dataloader
 
-
+import time
 
 
 def print_dict_shapes(obs:dict) -> None :
@@ -41,7 +41,7 @@ class TestingParameters:
     num_joints: int = 7
     image_size: tuple = (224, 224, 3)
     action_dims: int = 8
-    config_name: str = "pi05_ki" 
+    config_name: str = "pi05_droid_finetune" 
     
 # Create a global instance
 testing_parameters = TestingParameters()
@@ -58,6 +58,10 @@ class TestPI05:
         self.model : Pi05 = self.policy._model
         self.rng = jax.random.PRNGKey(0)
 
+    def warmup(self): 
+        dummy_obs = self.create_dummy_observation_DROID()
+        self.policy.infer(dummy_obs)
+
 
     def create_dummy_observation_DROID(self) -> dict : 
         """Creates a random input example for the Droid policy."""
@@ -67,6 +71,7 @@ class TestPI05:
             "observation/joint_position": np.random.rand(7),
             "observation/gripper_position": np.random.rand(1),
             "prompt": "pick up the cube then place it in the middle of the table.",
+            "subtask": None
         }
     
     def create_dummy_observation_DROID_HI(self) -> dict :
@@ -178,7 +183,7 @@ class TestPI05:
 
     def test_compute_loss(self): 
         assert isinstance(self.model, Pi05), "Model should be an instance of Pi05 for this test."
-        if self.model.hierarchical_mode: 
+        if self.model.hi_mode: 
             print("creating HI dummy data")
             self.dummy = self.create_dummy_observation_DROID_HI()
         else: 
@@ -209,6 +214,28 @@ class TestPI05:
         actions = jnp.pad(actions, ((0, 0), (0, 0), (0, 24)), mode='constant')  # Pad action dim from 8 to 32, so [1, 15, 8] -> [1, 15, 32] 
 
         self.model.compute_loss(self.rng, self.observation, actions, train=True)
+
+    def test_inference(self): 
+        assert isinstance(self.model, Pi05), "Model should be an instance of Pi05 for this test."
+        # if self.model.hierarchical_mode: 
+        #     print("creating HI dummy data")
+        #     self.dummy = self.create_dummy_observation_DROID_HI()
+        # else: 
+        self.dummy = self.create_dummy_observation_DROID()
+
+        data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
+        data_input_transforms = _transforms.compose(data_config.data_transforms.inputs)
+        model_transforms = _transforms.compose(data_config.model_transforms.inputs)
+        inputs = jax.tree.map(lambda x: x, self.dummy)
+        inputs = data_input_transforms(inputs)
+        inputs = model_transforms(inputs)
+        inputs = jax.tree.map(
+            lambda x: jnp.asarray(x)[np.newaxis, ...],
+            inputs
+        )
+        self.observation = _model.Observation.from_dict(inputs) 
+        result = self.policy.infer(self.dummy)
+        print(f"Inference result: {result}")
 
     def test_inference_HI(self): 
         assert self.model.hierarchical_mode, "Policy should be in hierarchical mode for this test."
@@ -251,11 +278,7 @@ class TestPI05:
         print("TESTING GETITEM")
         mixedset.__getitem__(0)
         print("GETITEM WORKED!")
-        pass
-
-        
-
-        
+        pass     
 
 
 if __name__ == "__main__":
@@ -263,22 +286,36 @@ if __name__ == "__main__":
     test_pi05 = TestPI05()
     print("Model type:", test_pi05.model.model_type)
     assert isinstance(test_pi05.model, Pi05), "Loaded model should be an instance of Pi05"
+    # test_pi05.warmup()
+
     # test_pi05.test_data_transforms()
     
     # test_pi05.test_compute_fast_loss()
     # test_pi05.test_subtask_generation()
-    # prefix_out = test_pi05.test_compute_loss()
+    prefix_out = test_pi05.test_compute_loss()
     # print(prefix_out)
+    
+    # test_pi05.test_mixed_training()
+
+    # tb = time.time()
+    # test_pi05.test_inference()
+    # ta = time.time()
+    # print(f"Inference time: {ta - tb:.2f} seconds")
+    # for i in range(3): 
+    #     tb = time.time()
+    #     test_pi05.test_inference()
+    #     ta = time.time()
+    #     print(f"Compute loss time: {ta - tb:.2f} seconds")
 
     # create_torch_dataset(
     #     test_pi05.config.data.create(test_pi05.config.assets_dirs, test_pi05.config.model),
     #     test_pi05.config.model.action_horizon, 
     #     test_pi05.config.model
     #     )
-    print("MANAGED TO LOAD TORCH SET")
-    for i in range(0, 3): 
-        inference_out = test_pi05.test_inference_HI()
-        print(f"Inference output loop {i}:", inference_out)
+    # print("MANAGED TO LOAD TORCH SET")
+    # for i in range(0, 3): 
+    #     inference_out = test_pi05.test_inference_HI()
+    #     print(f"Inference output loop {i}:", inference_out)
 
     
 # python decode_tokens.py "255667 255495 573 255649 255649 16616 573 255649 255649 16616 16616 255642 573 16616 573 255649 3124 255495 235248 255616"

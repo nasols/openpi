@@ -17,8 +17,6 @@ from openpi.shared import array_typing as at
 from openpi import transforms as _transforms
 
 
-
-
 logger = logging.getLogger("openpi")
 
 
@@ -450,7 +448,6 @@ class Pi0(_model.BaseModel):
             Generated subtask text (token IDs as they need external decoding)
         """
         
-        logger.log(level=103, msg=f"[HI-Robot] Generating subtask for prompt: {original_prompt}")
         
         # Get initial prefix embeddings (images + decomposition prompt)
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)

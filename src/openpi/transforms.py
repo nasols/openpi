@@ -254,7 +254,6 @@ class TokenizePrompt(DataTransformFn):
     discrete_state_input: bool = False
 
     def __call__(self, data: DataDict) -> DataDict:
-        #logger.log(level=103, msg="[DEBUG] Tokenizing prompt ...")
         if (prompt := data.pop("prompt", None)) is None:
             raise ValueError("Prompt is required")
 
@@ -271,12 +270,74 @@ class TokenizePrompt(DataTransformFn):
         return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
 
 @dataclasses.dataclass(frozen=True)
+class TokenizePromptHIKI(DataTransformFn):
+    """
+    Tokenizer model transform enabling hierarchical prompting and knowledge insulation.
+    Should handle all cases, i.e. when HI on/off and KI on/off.
+    """
+    tokenizer: _tokenizer.PaligemmaTokenizer
+    discrete_state_input: bool = False
+
+    def __call__(self, data: DataDict) -> DataDict:
+
+        prompt = data.pop("prompt", None)
+        subtask = data.pop("subtask", None)
+        state = data.get("state", None)
+
+        logger.log(level=103, msg=f"[DEBUG] TokenizePromptHIKI; hi-mode: {self.tokenizer.hi_mode}, ki-mode: {self.tokenizer.ki_mode}")
+
+        if (not isinstance(prompt, str)) and (prompt is not None):
+            prompt = prompt.item()
+        if (not isinstance(subtask, str)) and (subtask is not None):
+            subtask = subtask.item()
+        if (not self.tokenizer.ki_mode) and (not self.tokenizer.hi_mode): 
+            logger.log(level=103, msg=f"[DEBUG] Running fallback tokenize (no HI, no KI).")
+            # We assume HI and KI to be off
+            tokens, token_masks = self.tokenizer.tokenize(prompt, state)
+            # Tokens are representing the tokenized version of "Task: xxx; State: xxx; Action: " for the non-HIKI case.
+            return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
+
+        assert prompt is not None, "Prompt is required for HIKI tokenization."
+        assert state is not None, "State is required for HIKI tokenization."
+        # assert subtask is not None, "Subtask is required for HIKI tokenization."
+
+        # If tokenizer has the FAST tokenizer attributie, it expects actions to be passed. Else, None is passed, as inference. 
+        actions = data.get("actions", None) if self.tokenizer._FAST_tokenizer is not None else None 
+        
+        tokens, token_mask, ar_mask, subtask_loss_mask, action_loss_mask, subtask_mask, action_mask = self.tokenizer.build_tokenized_prompt(prompt, state, subtask, actions)
+        
+        # tokens are now representing the tokenized version of "Task: xxx; State: xxx; Subtask: xxx; Action: xxx" depending on the usecase. 
+        # Inference: "Task: xxx; State: xxx; Subtask: ". 
+        ## Then when subtask is predicted, it is added and the prompt is extended to "Task: xxx; State: xxx; Subtask: xxx; Action: ".
+
+        # Training with HI:         "Task: xxx; State: xxx; Subtask: xxx; Action: ".
+        # Training with KI:         "Task: xxx; State: xxx; Action: xxx".
+        # Training with HI and KI:  "Task: xxx; State: xxx; Subtask: xxx; Action: xxx".  
+        assert subtask_mask is not None, "Subtask mask is required for HIKI tokenization."
+        assert action_mask is not None, "Action mask is required for HIKI tokenization."
+        return {
+            **data, 
+            "tokenized_prompt": tokens, 
+            "tokenized_prompt_mask": token_mask, 
+            "token_ar_mask": ar_mask,
+            
+            "subtask_loss_mask": subtask_loss_mask,
+            "action_loss_mask": action_loss_mask,
+            "subtask_token_mask": subtask_mask,
+            "action_token_mask": action_mask
+        }
+
+    
+
+@dataclasses.dataclass(frozen=True)
 class TokenizeHierarchicalPrompt(DataTransformFn):
+
+    "Tokenizes the original prompt to the decomposition prompt format."
+
     tokenizer: _tokenizer.PaligemmaTokenizer
     
     def __call__(self, data: DataDict) -> DataDict:
 
-        logger.log(level=103, msg=f"[DEBUG] Recieved Data dict: {list(data.keys())}")
         prompt = data.pop("prompt")
         try: 
             subtask = data.pop("subtask")  # Ground truth from dataset
@@ -286,7 +347,6 @@ class TokenizeHierarchicalPrompt(DataTransformFn):
         state = data["state"]
         
         if subtask is not None: 
-            logger.log(level=103, msg=f"[DEBUG] Tokenizing hierarchical prompt with subtask ...{subtask} ...")
             # Gives out tokenized prompt of format: "Task: {subtastk}, State: {state}, Action: "
             tokens, token_masks = self.tokenizer.tokenize(subtask, state) # Tokenizing the subtask *Teacher forcing*
 
@@ -295,9 +355,7 @@ class TokenizeHierarchicalPrompt(DataTransformFn):
 
             # Tokenize raw subtask WITHOUT BOS token (will be concatenated to decomposition prompt for teacher forcing)
             st_gt_tokens, st_gt_token_masks = self.tokenizer.tokenize_raw_text(subtask)
-            logger.log(level=103, msg=f"[DEBUG] st_gt_tokens from tokenize_raw_text: {st_gt_tokens[:10].tolist()}")
-            logger.log(level=103, msg=f"[DEBUG] Expected [18075, 908, 573, 28660] for 'pick up the cube'")
-
+          
             return {
                 **data,
                 "tokenized_prompt": st_tokens,  # Decomposition prompt
@@ -308,7 +366,8 @@ class TokenizeHierarchicalPrompt(DataTransformFn):
                 "subtask_gt_mask": st_gt_token_masks,
             }
         
-        else: 
+        else: # Inference 
+            # Gives out tokenized prompt of format: "Task: {prompt}, State: {state}, Subtask: " 
             tokens, token_masks = self.tokenizer.tokenize_subtask(prompt, state) # Tokenizing the decomposition prompt
             return {
                 **data,
