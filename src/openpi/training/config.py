@@ -258,7 +258,6 @@ class DataConfigFactory(abc.ABC):
 
     def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # Determine repo_id: use repo_ids if available, otherwise use repo_id
-        print("Printing from DataConfigFactory: ", self.repo_ids)
         
         if self.repo_ids is not None:
             # Mixed dataset mode: repo_id will be None, and repo_ids will be set
@@ -1097,7 +1096,7 @@ _CONFIGS = [
         log_interval=100,
         keep_period=1000, # Don't delete any checkpoints based on step number
         batch_size=32,
-        fsdp_devices=2,
+        fsdp_devices=1,
     ),
     TrainConfig(
         # This config is for fine-tuning pi05-DROID on a custom (smaller) DROID dataset.

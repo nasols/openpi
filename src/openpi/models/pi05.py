@@ -185,7 +185,7 @@ class Pi05(_model.BaseModel):
         self.deterministic = True
 
         # Debugging purpose - should be removed later due to overhead 
-        self.tokenizer = _tokenizer.PaligemmaTokenizer(max_len=self.config.max_token_len)
+        # self.tokenizer = _tokenizer.PaligemmaTokenizer(max_len=self.config.max_token_len)
 
         # Guided inference
         self.max_delay = 5

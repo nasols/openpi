@@ -1,0 +1,111 @@
+warning: The `tool.uv.dev-dependencies` field (used in `packages/openpi-client/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+13:43:30.658 [I] Running on: MTP-lab-franka-desktop                                               (161767:train.py:200)
+INFO:2026-04-07 13:43:31,054:jax._src.xla_bridge:925: Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig'
+13:43:31.054 [I] Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig' (161767:xla_bridge.py:925)
+INFO:2026-04-07 13:43:31,055:jax._src.xla_bridge:925: Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+13:43:31.055 [I] Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory (161767:xla_bridge.py:925)
+13:43:31.661 [I] Wiped checkpoint directory /home/ril_mtplab/workspace/ril_franka-VLA/third_party/openpi/checkpoints/pi05_droid_finetune/test (161767:checkpoints.py:29)
+13:43:31.661 [I] Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0x75dfa0eb1710> (161767:base_pytree_checkpoint_handler.py:334)
+13:43:31.661 [I] Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0x75dfa0eb1710> (161767:base_pytree_checkpoint_handler.py:334)
+13:43:31.662 [I] [thread=MainThread] Failed to get flag value for EXPERIMENTAL_ORBAX_USE_DISTRIBUTED_PROCESS_ID. (161767:multihost.py:390)
+13:43:31.662 [I] [process=0][thread=MainThread] CheckpointManager init: checkpointers=None, item_names=None, item_handlers={'assets': <openpi.training.checkpoints.CallbackHandler object at 0x75de04b2f790>, 'train_state': <orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler object at 0x75de04d21450>, 'params': <orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler object at 0x75de04b17350>}, handler_registry=None (161767:checkpoint_manager.py:621)
+13:43:31.663 [I] Deferred registration for item: "assets". Adding handler `<openpi.training.checkpoints.CallbackHandler object at 0x75de04b2f790>` for item "assets" and save args `<class 'openpi.training.checkpoints.CallbackSave'>` and restore args `<class 'openpi.training.checkpoints.CallbackRestore'>` to `_handler_registry`. (161767:composite_checkpoint_handler.py:234)
+13:43:31.663 [I] Deferred registration for item: "train_state". Adding handler `<orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler object at 0x75de04d21450>` for item "train_state" and save args `<class 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeSaveArgs'>` and restore args `<class 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeRestoreArgs'>` to `_handler_registry`. (161767:composite_checkpoint_handler.py:234)
+13:43:31.663 [I] Deferred registration for item: "params". Adding handler `<orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler object at 0x75de04b17350>` for item "params" and save args `<class 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeSaveArgs'>` and restore args `<class 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeRestoreArgs'>` to `_handler_registry`. (161767:composite_checkpoint_handler.py:234)
+13:43:31.663 [I] Deferred registration for item: "metrics". Adding handler `<orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonCheckpointHandler object at 0x75de048fb310>` for item "metrics" and save args `<class 'orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonSaveArgs'>` and restore args `<class 'orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonRestoreArgs'>` to `_handler_registry`. (161767:composite_checkpoint_handler.py:234)
+13:43:31.663 [I] Initialized registry DefaultCheckpointHandlerRegistry({('assets', <class 'openpi.training.checkpoints.CallbackSave'>): <openpi.training.checkpoints.CallbackHandler object at 0x75de04b2f790>, ('assets', <class 'openpi.training.checkpoints.CallbackRestore'>): <openpi.training.checkpoints.CallbackHandler object at 0x75de04b2f790>, ('train_state', <class 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeSaveArgs'>): <orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler object at 0x75de04d21450>, ('train_state', <class 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeRestoreArgs'>): <orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler object at 0x75de04d21450>, ('params', <class 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeSaveArgs'>): <orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler object at 0x75de04b17350>, ('params', <class 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeRestoreArgs'>): <orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler object at 0x75de04b17350>, ('metrics', <class 'orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonSaveArgs'>): <orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonCheckpointHandler object at 0x75de048fb310>, ('metrics', <class 'orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonRestoreArgs'>): <orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonCheckpointHandler object at 0x75de048fb310>}). (161767:composite_checkpoint_handler.py:502)
+13:43:31.663 [I] orbax-checkpoint version: 0.11.13                                                (161767:abstract_checkpointer.py:35)
+13:43:31.663 [I] [process=0][thread=MainThread] Using barrier_sync_fn: <function get_barrier_sync_fn.<locals>.<lambda> at 0x75ddf0186ac0> timeout: 7200 secs and primary_host=0 for async checkpoint writes (161767:async_checkpointer.py:170)
+13:43:31.664 [I] Found 0 checkpoint steps in /home/ril_mtplab/workspace/ril_franka-VLA/third_party/openpi/checkpoints/pi05_droid_finetune/test (161767:checkpoint_manager.py:1702)
+13:43:31.664 [I] [process=0][thread=MainThread] CheckpointManager created,  primary_host=0, CheckpointManagerOptions=CheckpointManagerOptions(save_interval_steps=1, max_to_keep=1, keep_time_interval=None, keep_period=1000, keep_list=None, should_keep_fn=None, best_fn=None, best_mode='max', keep_checkpoints_without_metrics=True, step_prefix=None, step_format_fixed_length=None, step_name_format=None, create=False, cleanup_tmp_directories=False, save_on_steps=frozenset(), single_host_load_and_broadcast=False, todelete_subdir=None, enable_background_delete=False, read_only=False, enable_async_checkpointing=True, async_options=AsyncOptions(timeout_secs=7200, barrier_sync_fn=None, post_finalization_callback=None, create_directories_asynchronously=True), multiprocessing_options=MultiprocessingOptions(primary_host=0, active_processes=None, barrier_sync_key_prefix=None), should_save_fn=None, file_options=FileOptions(path_permission_mode=None), save_root_metadata=True, temporary_path_class=None, save_decision_policy=None, prevent_write_metrics=False), root_directory=/home/ril_mtplab/workspace/ril_franka-VLA/third_party/openpi/checkpoints/pi05_droid_finetune/test: <orbax.checkpoint.checkpoint_manager.CheckpointManager object at 0x75de054f4b10> (161767:checkpoint_manager.py:802)
+13:43:31.755 [I] Loaded norm stats from gs://openpi-assets/checkpoints/pi05_droid/assets/droid    (161767:config.py:293)
+13:43:31.757 [I] data_config: DataConfig(repo_id=None, repo_ids=[LeRobotDatasetConfig(repo_id='expanded_lerobot_pickupcube', weight=1.0), LeRobotDatasetConfig(repo_id='expanded_lerobot_pickandplace', weight=1.0)], asset_id='droid', norm_stats={'actions': NormStats(mean=array([-0.00472902,  0.01138824,  0.00182514,  0.02847176,  0.00134291,
+       -0.00297834,  0.00286467,  0.451404  ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ]), std=array([0.15559124, 0.30745908, 0.1514089 , 0.30116801, 0.22751769,
+       0.24581617, 0.2694818 , 0.44138649, 0.        , 0.        ,
+       0.        , 0.        , 0.        , 0.        , 0.        ,
+       0.        , 0.        , 0.        , 0.        , 0.        ,
+       0.        , 0.        , 0.        , 0.        , 0.        ,
+       0.        , 0.        , 0.        , 0.        , 0.        ,
+       0.        , 0.        ]), q01=array([-0.458 , -0.8076, -0.4472, -0.9268, -0.6456, -0.646 , -0.7616,
+        0.    ,  0.    ,  0.    ,  0.    ,  0.    ,  0.    ,  0.    ,
+        0.    ,  0.    ,  0.    ,  0.    ,  0.    ,  0.    ,  0.    ,
+        0.    ,  0.    ,  0.    ,  0.    ,  0.    ,  0.    ,  0.    ,
+        0.    ,  0.    ,  0.    ,  0.    ]), q99=array([0.4476, 0.7652, 0.448 , 0.7944, 0.6484, 0.6628, 0.7344, 0.9998,
+       0.    , 0.    , 0.    , 0.    , 0.    , 0.    , 0.    , 0.    ,
+       0.    , 0.    , 0.    , 0.    , 0.    , 0.    , 0.    , 0.    ,
+       0.    , 0.    , 0.    , 0.    , 0.    , 0.    , 0.    , 0.    ])), 'state': NormStats(mean=array([ 0.01623776,  0.2671541 , -0.01671005, -2.0255713 , -0.03266583,
+        2.34454918,  0.08269685,  0.39978886,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ]), std=array([0.30769925, 0.4821603 , 0.26944264, 0.48189821, 0.53741878,
+       0.45384659, 0.74746761, 0.40705742, 0.        , 0.        ,
+       0.        , 0.        , 0.        , 0.        , 0.        ,
+       0.        , 0.        , 0.        , 0.        , 0.        ,
+       0.        , 0.        , 0.        , 0.        , 0.        ,
+       0.        , 0.        , 0.        , 0.        , 0.        ,
+       0.        , 0.        ]), q01=array([-0.82797322, -0.83983118, -0.84254821, -2.77301528, -1.84261813,
+        1.17165664, -2.04726484,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ]), q99=array([ 0.89965229,  1.38546747,  0.69202774, -0.45420431,  1.73231424,
+        3.46729648,  2.19849721,  0.991     ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ,  0.        ,  0.        ,  0.        ,
+        0.        ,  0.        ]))}, repack_transforms=Group(inputs=[RepackTransform(structure={'observation/exterior_image_1_left': 'exterior_image_1_left', 'observation/wrist_image_left': 'wrist_image_left', 'observation/joint_position': 'joint_position', 'observation/gripper_position': 'gripper_position', 'actions': 'actions', 'prompt': 'prompt'})], outputs=()), data_transforms=Group(inputs=[DroidInputs(model_type=<ModelType.PI05: 'pi05'>)], outputs=[DroidOutputs()]), model_transforms=Group(inputs=[InjectDefaultPrompt(prompt=None), ResizeImages(height=224, width=224), TokenizePromptHIKI(tokenizer=<openpi.models.tokenizer.PaligemmaTokenizer object at 0x75de04d21210>, discrete_state_input=True), PadStatesAndActions(model_action_dim=32)], outputs=()), use_quantile_norm=True, action_sequence_keys=('actions',), prompt_from_task=True, rlds_data_dir=None, action_space=None, datasets=()) (161767:data_loader.py:377)
+13:43:31.757 [I] Creating mixed dataset with 2 datasets                                           (161767:data_loader.py:224)
+13:43:31.757 [I] Loading dataset: expanded_lerobot_pickupcube (weight=1.0)                        (161767:data_loader.py:234)
+13:43:32.805 [I] Loading dataset: expanded_lerobot_pickandplace (weight=1.0)                      (161767:data_loader.py:234)
+13:43:33.367 [I] Created MixedDataset with 2 datasets:                                            (161767:data_loader.py:174)
+13:43:33.368 [I]   Dataset 0: 21061 samples, weight=1.000 (50.0%)                                 (161767:data_loader.py:176)
+13:43:33.368 [I]   Dataset 1: 29622 samples, weight=1.000 (50.0%)                                 (161767:data_loader.py:176)
+13:43:33.368 [I] local_batch_size: 32                                                             (161767:data_loader.py:458)
+Pringint from create_torch_dataset:  [LeRobotDatasetConfig(repo_id='expanded_lerobot_pickupcube', weight=1.0), LeRobotDatasetConfig(repo_id='expanded_lerobot_pickandplace', weight=1.0)]
+13:43:49.663 [I] Initialized data loader:
+[0].images['base_0_rgb']: (32, 224, 224, 3)@float32
+[0].images['left_wrist_0_rgb']: (32, 224, 224, 3)@float32
+[0].images['right_wrist_0_rgb']: (32, 224, 224, 3)@float32
+[0].image_masks['base_0_rgb']: (32,)@bool
+[0].image_masks['left_wrist_0_rgb']: (32,)@bool
+[0].image_masks['right_wrist_0_rgb']: (32,)@bool
+[0].state: (32, 32)@float32
+[0].tokenized_prompt: (32, 200)@int32
+[0].tokenized_prompt_mask: (32, 200)@bool
+[1]: (32, 15, 32)@float32 (161767:train.py:232)
+13:43:50.329 [I] Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0x75dfa0eb1710> (161767:base_pytree_checkpoint_handler.py:334)
+13:43:50.362 [I] Restoring checkpoint from /home/ril_mtplab/.cache/openpi/openpi-assets/checkpoints/pi05_droid/params. (161767:checkpointer.py:298)
+13:43:57.756 [I] [process=0] /jax/checkpoint/read/bytes_per_sec: 1.7 GiB/s (total bytes: 12.5 GiB) (time elapsed: 7 seconds) (per-host) (161767:base_pytree_checkpoint_handler.py:114)
+13:43:57.756 [I] Finished restoring checkpoint in 7.39 seconds from /home/ril_mtplab/.cache/openpi/openpi-assets/checkpoints/pi05_droid/params. (161767:checkpointer.py:309)
+2026-04-07 13:43:58.164463: E external/xla/xla/service/gpu/gpu_hlo_schedule.cc:654] The byte size of input/output arguments (53654943620) exceeds the base limit (18966380544). This indicates an error in the calculation!
+2026-04-07 13:43:58.175420: W external/xla/xla/hlo/transforms/simplifiers/hlo_rematerialization.cc:3021] Can't reduce memory use below 0B (0 bytes) by rematerialization; only reduced to 49.97GiB (53654945276 bytes), down from 49.97GiB (53654945276 bytes) originally
+2026-04-07 13:44:12.108408: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_0_bfc) ran out of memory trying to allocate 4.50GiB (rounded to 4831838208)requested by op 
+2026-04-07 13:44:12.108678: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] *************************************************************************************************___
+E0407 13:44:12.108724  161767 pjrt_stream_executor_client.cc:3077] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 4831838208 bytes. [tf-allocator-allocation-error='']
+Traceback (most recent call last):
+  File "/home/ril_mtplab/workspace/ril_franka-VLA/third_party/openpi/scripts/train.py", line 292, in <module>
+    main(_config.cli())
+  File "/home/ril_mtplab/workspace/ril_franka-VLA/third_party/openpi/scripts/train.py", line 241, in main
+    train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ril_mtplab/workspace/ril_franka-VLA/third_party/openpi/.venv/lib/python3.11/site-packages/jaxtyping/_decorator.py", line 559, in wrapped_fn
+    return wrapped_fn_impl(args, kwargs, bound, memos)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ril_mtplab/workspace/ril_franka-VLA/third_party/openpi/.venv/lib/python3.11/site-packages/jaxtyping/_decorator.py", line 483, in wrapped_fn_impl
+    out = fn(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^
+  File "/home/ril_mtplab/workspace/ril_franka-VLA/third_party/openpi/scripts/train.py", line 130, in init_train_state
+    train_state = jax.jit(
+                  ^^^^^^^^
+jaxlib.xla_extension.XlaRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 4831838208 bytes.
+--------------------
+For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
