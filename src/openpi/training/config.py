@@ -1097,7 +1097,7 @@ _CONFIGS = [
         log_interval=100,
         keep_period=None, # Don't delete any checkpoints based on step number
         batch_size=32,
-        fsdp_devices=2,
+        fsdp_devices=1,
     ),
     TrainConfig(
         # This config is for fine-tuning pi05-DROID on a custom (smaller) DROID dataset.
@@ -1345,7 +1345,7 @@ class PolicyConfig: # Can be expanded with KI and HI pipelines
     @property
     def get_checkpoint_dir(self): 
         if self.exp_name is not None and self.checkpoint is not None: 
-#            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
+            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
             return pathlib.Path(f"/media/ril_mtplab/HDD 2TB/vla/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
 
         else: 
