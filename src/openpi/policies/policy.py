@@ -133,7 +133,6 @@ class Policy(BasePolicy):
             sample_kwargs["j"] = j
             #self._previous_action_chunk = _gen_sample_action(action_horizon=15, action_dim=32)
             sample_kwargs["A_prev"] = self._previous_action_chunk[:, s:, :] if self._previous_action_chunk is not None else None  
-            # logger.log(level=103, msg=f"[DEBUG] Inference: Using guided inference with previous action chunk shape: {sample_kwargs['A_prev']}")
         else: 
             print("[DEBUG] Not running guided inference")
         observation = _model.Observation.from_dict(inputs)
@@ -176,7 +175,6 @@ class Policy(BasePolicy):
             
         ############################
         
-        logger.log(level=103, msg=f"[DEBUG] Inference: Observation tokenized prompt after processing: {self._tokenizer.decode(observation.tokenized_prompt)}")
 
         
         start_time = time.monotonic()

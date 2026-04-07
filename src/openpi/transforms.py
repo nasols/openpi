@@ -284,14 +284,12 @@ class TokenizePromptHIKI(DataTransformFn):
         subtask = data.pop("subtask", None)
         state = data.get("state", None)
 
-        logger.log(level=103, msg=f"[DEBUG] TokenizePromptHIKI; hi-mode: {self.tokenizer.hi_mode}, ki-mode: {self.tokenizer.ki_mode}")
 
         if (not isinstance(prompt, str)) and (prompt is not None):
             prompt = prompt.item()
         if (not isinstance(subtask, str)) and (subtask is not None):
             subtask = subtask.item()
         if (not self.tokenizer.ki_mode) and (not self.tokenizer.hi_mode): 
-            logger.log(level=103, msg=f"[DEBUG] Running fallback tokenize (no HI, no KI).")
             # We assume HI and KI to be off
             tokens, token_masks = self.tokenizer.tokenize(prompt, state)
             # Tokens are representing the tokenized version of "Task: xxx; State: xxx; Action: " for the non-HIKI case.

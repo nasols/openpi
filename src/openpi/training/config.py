@@ -1097,51 +1097,64 @@ _CONFIGS = [
         log_interval=100,
         keep_period=1000, # Don't delete any checkpoints based on step number
         batch_size=32,
-        fsdp_devices=1,
+        fsdp_devices=2,
     ),
     TrainConfig(
         # This config is for fine-tuning pi05-DROID on a custom (smaller) DROID dataset.
         # Here, we use LeRobot data format (like for all other fine-tuning examples)
         # To convert your custom DROID dataset (<10s of hours) to LeRobot format, see examples/droid/convert_droid_data_to_lerobot.py
-        name="pi05_droid_finetune_02",
+        name="pi05_droid_finetune_2",
         model=pi05_config.Pi05Config(
             action_dim=32,  # pi05 is trained with 32-dim actions
-            action_horizon=15,
+            action_horizon=15,  
+            ki_mode=False, 
+            hi_mode=False,
+            guided_inference=False
         ),
 
-        # data=LeRobotDROIDDataConfig(
+        data=LeRobotDROIDDataConfig(
+            # Use repo_ids instead of repo_id to specify multiple datasets
+            repo_ids=[
+                # Each dataset can have a different sampling weight
+                # Higher weight = more samples from this dataset during training
+                LeRobotDatasetConfig(repo_id="expanded_lerobot_pickupcube", weight=1.0),
+                LeRobotDatasetConfig(repo_id="expanded_lerobot_pickandplace", weight=1.0), 
+            ],
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                # Important: use the same normalization stats for all datasets
+                assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets", # Training from DROID base checkpoint
+                asset_id="droid",
+                # assets_dir="./checkpoints/pi05_droid_finetune/lerobot_mixed_01/4099/assets",
+                # asset_id="droid",
+            ),
+        ),
+        
+        # data=HiRobotLeRobotDROIDDataConfig(
         #     # Use repo_ids instead of repo_id to specify multiple datasets
         #     repo_ids=[
         #         # Each dataset can have a different sampling weight
         #         # Higher weight = more samples from this dataset during training
-        #         LeRobotDatasetConfig(repo_id="lerobot_pickupcube", weight=1.0),
-        #         LeRobotDatasetConfig(repo_id="lerobot_pickandplace", weight=1.0), 
+        #         LeRobotDatasetConfig(repo_id="old_pickupcube", weight=1.0),
+        #         LeRobotDatasetConfig(repo_id="lerobot_pickandplace", weight=0.0), 
         #     ],
         #     base_config=DataConfig(prompt_from_task=True),
         #     assets=AssetsConfig(
         #         # Important: use the same normalization stats for all datasets
-        #         assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
+        #         assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets", # Training from DROID base checkpoint
         #         asset_id="droid",
+        #         # assets_dir="./checkpoints/pi05_droid_finetune/lerobot_mixed_01/4099/assets",
+        #         # asset_id="droid",
         #     ),
-        # ),
+        # ), 
         
-        data=LeRobotDROIDDataConfig(
-            # Replace with your custom DROID LeRobot dataset repo id.
-            repo_id="lerobot_pickandplace",
-            base_config=DataConfig(prompt_from_task=True),
-            assets=AssetsConfig(
-                # Important: reuse the original DROID norm stats during fine-tuning!
-                # assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets",
-                assets_dir="./checkpoints/pi05_droid_finetune/sequential_01/1999/assets",
-                asset_id="droid",
-            ),
-        ),
-        # weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
-        weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi05_droid_finetune/sequential_01/1999/params"),
-        num_train_steps=3000, #+ 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
-        save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"), # Training from DROID base checkpoint 
+        # weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi05_droid_finetune/lerobot_mixed_01/4099/params"),
+        num_train_steps=6000 + 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
+        save_interval=1000, # AT WHAT STEPS TO SAVE  
+        #keep_list=[500, 1000, 2000, 3000, 4000, 6000], # At what training steps to save
         log_interval=100,
-        # keep_period=2000,
+        keep_period=1000, # Don't delete any checkpoints based on step number
         batch_size=32,
         fsdp_devices=2,
     ),

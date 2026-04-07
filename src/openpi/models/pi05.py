@@ -239,10 +239,7 @@ class Pi05(_model.BaseModel):
         predicted_tokens = jnp.argmax(logits, axis=-1)
         # Find first few positions where loss_mask is True
         mask_indices = jnp.where(loss_mask[0])[0][:5]
-        jax.debug.print("  First 5 FAST token positions: {idx}", idx=mask_indices)
-        jax.debug.print("  PREDICTED FAST tokens: {p}", p=predicted_tokens[0, mask_indices])
-        jax.debug.print("  GROUND TRUTH tokens:   {t}", t=target_tokens[0, mask_indices])
-        
+
         # Apply loss mask: only compute loss on FAST tokens
         masked_loss = per_token_loss * loss_mask
         
@@ -292,9 +289,6 @@ class Pi05(_model.BaseModel):
         # Predict tokens and show for debugging
         predicted_token_ids = jnp.argmax(logits, axis=-1)
 
-        logger.log(level=103, msg=f"[DEBUG] Subtask prediction: {self.tokenizer.decode(predicted_token_ids)}")
-        logger.log(level=103, msg=f"[DEBUG] Subtask target: {self.tokenizer.decode(target_tokens)}")
-        
         # Compute loss
         per_token_loss = optax.softmax_cross_entropy_with_integer_labels(logits, target_tokens)
         valid_mask = subtask_mask.astype(jnp.float32)  # No shift needed
@@ -427,13 +421,11 @@ class Pi05(_model.BaseModel):
         ) & observation.tokenized_prompt_mask
         base_prompt_tokens = jnp.where(base_prompt_mask, observation.tokenized_prompt, 0)
         
-        logger.log(level=103, msg=f"[DEBUG] Base prompt {self.tokenizer.decode(base_prompt_tokens)}")
         
         gt_fast_only, gt_fast_mask = _pack_sequence_by_first_true(
             observation.tokenized_prompt,
             observation.action_token_mask,
         )
-        logger.log(level=103, msg=f"[DEBUG] GT FAST tokens {self.tokenizer.decode(gt_fast_only)}")
         
         base_prompt_obs = _model.Observation(
             images=observation.images,
@@ -480,7 +472,6 @@ class Pi05(_model.BaseModel):
         )
 
 
-        logger.log(level=103, msg=f"[DEBUG] FAST loss: {FAST_loss}")
 
         #############################################################################
         ###### PART TWO: ACTION LOSS - Reuse KV cache to avoid recomputing VLM ######
@@ -513,7 +504,6 @@ class Pi05(_model.BaseModel):
         ) 
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
         continuous_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
-        logger.log(level=103, msg=f"[DEBUG] Continuous action loss computed: {jnp.mean(continuous_loss):.4f}")
         # Combined loss: both components contribute to final loss
         total_loss = continuous_loss + self.ki_fast_loss_weight * FAST_loss
         return total_loss
@@ -583,7 +573,6 @@ class Pi05(_model.BaseModel):
         ) & observation.tokenized_prompt_mask
         base_prompt_tokens = jnp.where(base_prompt_mask, observation.tokenized_prompt, 0)
         
-        logger.log(level=103, msg=f"[DEBUG] Base prompt {self.tokenizer.decode(base_prompt_tokens)}")
         
         # Step 2: Extract GT subtask tokens and left-pack them for aligned teacher forcing.
         # The mask from tokenization is a contiguous span, so rolling by first True index
@@ -592,7 +581,6 @@ class Pi05(_model.BaseModel):
             observation.tokenized_prompt,
             observation.subtask_token_mask,
         )
-        logger.log(level=103, msg=f"[DEBUG] GT Subtask {self.tokenizer.decode(gt_subtask_only)}")
         
         # Step 3: Create observation with only base prompt for embed_prefix
         base_prompt_obs = _model.Observation(
@@ -638,7 +626,6 @@ class Pi05(_model.BaseModel):
         
         # Compute loss on all subtask tokens
         subtask_loss = self._compute_subtask_loss(prefix_out_pred, gt_subtask_only, gt_subtask_mask)
-        logger.log(level=103, msg=f"[DEBUG] Subtask prediction loss: {subtask_loss}")
 
         #########################################################################################
         ######## PART TWO: Action Loss with Ground Truth Action Prompt (Teacher Forcing) ########
@@ -717,16 +704,13 @@ class Pi05(_model.BaseModel):
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ) -> at.Float[at.Array, "*b ah"]:
 
-        logger.log(level=103, msg=f"[DEBUG] De-tokenized observation passed to compute loss: {self.tokenizer.decode(observation.tokenized_prompt)}")
         
         #### HACK - Lets us use the compute loss function call always depending on the model type 
         if self.hi_mode and not self.ki_mode:
             # If hi_mode enabled, we expect the prompt in obs to look like "Task: {task}; State: {state}; Subtask: {subtask};\n Action: " with masks indicating tokens that are the subtask tokens.   
-            logger.log(level=103, msg="[DEBUG] Computing hierarchical loss with teacher forcing.")
             return self.compute_loss_hierarchical(rng, observation, actions, train=train)
         elif self.ki_mode and not self.hi_mode:
             # If ki_mode enabled, we expect the prompt in obs to look like "Task: {task}; State: {state};\n Action: {FAST tokens}" with masks indicating which tokens are the FAST tokens.  
-            logger.log(level=103, msg="[DEBUG] Computing loss with knowledge insulation.")
             return self.compute_loss_ki(rng, observation, actions, train=train)
 
         elif self.ki_mode and self.hi_mode: 
@@ -735,7 +719,6 @@ class Pi05(_model.BaseModel):
             pass 
         
         elif self.config.guided_inference: 
-            logger.log(level=103, msg="[DEBUG] Computing guided inference loss.")
             batch_shape = actions.shape[:-2]
             preprocess_rng, noise_rng, time_rng, delay_rng = jax.random.split(rng, 4)
             delay = jax.random.randint(delay_rng, batch_shape, 0, self.max_delay)
@@ -762,8 +745,6 @@ class Pi05(_model.BaseModel):
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
             loss = jnp.square(v_t - u_t)
             postfix_action_mask = ~prefix_action_mask[:, :, None]
-            logger.log(level=103, msg=f"[DEBUG] Delay: {delay}, Time: {time}, Prefix action mask: {prefix_action_mask}, Postfix action mask: {postfix_action_mask}")
-            jax.debug.print(f"[DEBUG] Delay: {delay}, Time: {time}, Prefix action mask: {prefix_action_mask}, Postfix action mask: {postfix_action_mask}")
             loss = jnp.sum(loss*postfix_action_mask) / (jnp.sum(postfix_action_mask) + 1e-8) # computing the mean over only the action postfix tokens, i.e. the predicted tokens
             return loss 
 
@@ -783,7 +764,6 @@ class Pi05(_model.BaseModel):
             time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
             time_expanded = time[..., None, None]
             time = jnp.repeat(time_expanded, self.action_horizon).reshape(1,-1)
-            logger.log(level=103, msg=f"[DEBUG] Time shape: {time.shape}")
             x_t = time_expanded * noise + (1 - time_expanded) * actions
             u_t = noise - actions
 
@@ -1274,7 +1254,6 @@ class Pi05(_model.BaseModel):
             last_logits = jax.nn.log_softmax(last_logits, axis=-1)
 
             if bool(eos): 
-                logger.log(level=103, msg=f"[HI-Robot] EOS token generated at step {step}. Stopping generation.")
                 
                 break
 
