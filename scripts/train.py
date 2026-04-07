@@ -1,3 +1,7 @@
+
+import logging
+
+logger = logging.getLogger("openpi")
 import dataclasses
 import functools
 import logging

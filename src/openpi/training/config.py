@@ -1053,31 +1053,13 @@ _CONFIGS = [
             guided_inference=True
         ),
 
-        # data=LeRobotDROIDDataConfig(
-        #     # Use repo_ids instead of repo_id to specify multiple datasets
-        #     repo_ids=[
-        #         # Each dataset can have a different sampling weight
-        #         # Higher weight = more samples from this dataset during training
-        #         LeRobotDatasetConfig(repo_id="lerobot_pickupcube", weight=1.0),
-        #         # LeRobotDatasetConfig(repo_id="lerobot_pickandplace", weight=1.0), 
-        #     ],
-        #     base_config=DataConfig(prompt_from_task=True),
-        #     assets=AssetsConfig(
-        #         # Important: use the same normalization stats for all datasets
-        #         assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets", # Training from DROID base checkpoint
-        #         asset_id="droid",
-        #         # assets_dir="./checkpoints/pi05_droid_finetune/lerobot_mixed_01/4099/assets",
-        #         # asset_id="droid",
-        #     ),
-        # ),
-        
-        data=HiRobotLeRobotDROIDDataConfig(
+        data=LeRobotDROIDDataConfig(
             # Use repo_ids instead of repo_id to specify multiple datasets
             repo_ids=[
                 # Each dataset can have a different sampling weight
                 # Higher weight = more samples from this dataset during training
-                LeRobotDatasetConfig(repo_id="old_pickupcube", weight=1.0),
-                # LeRobotDatasetConfig(repo_id="lerobot_pickandplace", weight=0.0), 
+                LeRobotDatasetConfig(repo_id="expanded_lerobot_pickupcube", weight=1.0),
+                LeRobotDatasetConfig(repo_id="expanded_lerobot_pickandplace", weight=1.0), 
             ],
             base_config=DataConfig(prompt_from_task=True),
             assets=AssetsConfig(
@@ -1087,15 +1069,33 @@ _CONFIGS = [
                 # assets_dir="./checkpoints/pi05_droid_finetune/lerobot_mixed_01/4099/assets",
                 # asset_id="droid",
             ),
-        ), 
+        ),
+        
+        # data=HiRobotLeRobotDROIDDataConfig(
+        #     # Use repo_ids instead of repo_id to specify multiple datasets
+        #     repo_ids=[
+        #         # Each dataset can have a different sampling weight
+        #         # Higher weight = more samples from this dataset during training
+        #         LeRobotDatasetConfig(repo_id="old_pickupcube", weight=1.0),
+        #         LeRobotDatasetConfig(repo_id="lerobot_pickandplace", weight=0.0), 
+        #     ],
+        #     base_config=DataConfig(prompt_from_task=True),
+        #     assets=AssetsConfig(
+        #         # Important: use the same normalization stats for all datasets
+        #         assets_dir="gs://openpi-assets/checkpoints/pi05_droid/assets", # Training from DROID base checkpoint
+        #         asset_id="droid",
+        #         # assets_dir="./checkpoints/pi05_droid_finetune/lerobot_mixed_01/4099/assets",
+        #         # asset_id="droid",
+        #     ),
+        # ), 
         
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"), # Training from DROID base checkpoint 
         # weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi05_droid_finetune/lerobot_mixed_01/4099/params"),
         num_train_steps=6000 + 100, # TO ACCOUNT FOR ASYNC SAVING NEAR THE END OF TRAINING
-        # save_interval=1000, # AT WHAT STEPS TO SAVE -- SHOULD BE AROUND HALF THE num_train_steps 
-        keep_list=[500, 1000, 2000, 3000, 4000, 6000], # At what training steps to save
+        save_interval=1000, # AT WHAT STEPS TO SAVE  
+        #keep_list=[500, 1000, 2000, 3000, 4000, 6000], # At what training steps to save
         log_interval=100,
-        keep_period=None, # Don't delete any checkpoints based on step number
+        keep_period=1000, # Don't delete any checkpoints based on step number
         batch_size=32,
         fsdp_devices=2,
     ),
@@ -1345,7 +1345,7 @@ class PolicyConfig: # Can be expanded with KI and HI pipelines
     @property
     def get_checkpoint_dir(self): 
         if self.exp_name is not None and self.checkpoint is not None: 
-#            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
+            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
             return pathlib.Path(f"/media/ril_mtplab/HDD 2TB/vla/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
 
         else: 
