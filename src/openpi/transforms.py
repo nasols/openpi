@@ -284,7 +284,7 @@ class TokenizePromptHIKI(DataTransformFn):
         subtask = data.pop("subtask", None)
         state = data.get("state", None)
 
-
+        
         if (not isinstance(prompt, str)) and (prompt is not None):
             prompt = prompt.item()
         if (not isinstance(subtask, str)) and (subtask is not None):

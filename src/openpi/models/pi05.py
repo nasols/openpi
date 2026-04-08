@@ -122,18 +122,20 @@ def posemb_sincos(
     if embedding_dim % 2 != 0:
         raise ValueError(f"embedding_dim ({embedding_dim}) must be divisible by 2")
 
-    if pos.ndim == 2: 
-        pos = jnp.squeeze(pos)
-
-    fraction = jnp.linspace(0.0, 1.0, embedding_dim // 2)
-    period = min_period * (max_period / min_period) ** fraction
+    original_shape = pos.shape # (32, 15)
+    logger.log(level=103, msg=f"FROM POSEMB_SINCOS: Original position shape: {original_shape}")
+    pos_flat = pos.reshape(-1)
+    fraction = jnp.linspace(0.0, 1.0, embedding_dim // 2) # 512 arr
+    period = min_period * (max_period / min_period) ** fraction  # 512 arr 
     sinusoid_input = jnp.einsum(
         "i,j->ij",
-        pos,
-        1.0 / period * 2 * jnp.pi,
+        pos_flat, # (480,)
+        1.0 / period * 2 * jnp.pi, # (512)
         precision=jax.lax.Precision.HIGHEST,
     )
-    return jnp.concatenate([jnp.sin(sinusoid_input), jnp.cos(sinusoid_input)], axis=-1)
+    emb = jnp.concatenate([jnp.sin(sinusoid_input), jnp.cos(sinusoid_input)], axis=-1)
+    emb = emb.reshape(*original_shape, embedding_dim) # (32, 15, 1024)
+    return emb
 
 
 class Pi05(_model.BaseModel):
@@ -333,22 +335,22 @@ class Pi05(_model.BaseModel):
 
     @at.typecheck
     def embed_suffix(
-        self, obs: _model.Observation, noisy_actions: _model.Actions, timestep: at.Float[at.Array, " b *ad"]
+        self, obs: _model.Observation, noisy_actions: _model.Actions, timestep: at.Float[at.Array, "b *s"]
     ) -> tuple[
         at.Float[at.Array, "b s emb"],
         at.Bool[at.Array, "b s"],
-        at.Bool[at.Array, " s"],
-        at.Float[at.Array, "b s emb"] | None, # Allows adarms to be shaped [b, ad, emb], i.e. (batch, 15, 1024) for per-token time embedding.
+        at.Bool[at.Array, "s"],
+        at.Float[at.Array, "b *s emb"] | None, # Allows adarms to be shaped [b, ad, emb], i.e. (batch, 15, 1024) for per-token time embedding.
     ]:
         input_mask = []
         ar_mask = []
         tokens = []
         b = noisy_actions.shape[0] if len(noisy_actions.shape) == 3 else 1
-        embed_dim = self.action_in_proj.out_features
+        embed_dim = self.action_in_proj.out_features #1024 
         
         action_tokens = self.action_in_proj(noisy_actions)
         # embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
-        time_emb = posemb_sincos(timestep, embed_dim, min_period=4e-3, max_period=4.0)
+        time_emb = posemb_sincos(timestep, embed_dim, min_period=4e-3, max_period=4.0) # (32, 15, 1024)
         
         # time MLP (for adaRMS)
         time_emb = self.time_mlp_in(time_emb)
@@ -367,7 +369,8 @@ class Pi05(_model.BaseModel):
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
-        adarms_cond = adarms_cond.reshape(tokens.shape)
+        logger.log(level=103, msg=f"ADRAMS SHAPE: {adarms_cond.shape}")
+        # adarms_cond = adarms_cond.reshape(tokens.shape)
         return tokens, input_mask, ar_mask, adarms_cond
     
     @override
@@ -729,7 +732,8 @@ class Pi05(_model.BaseModel):
 
             prefix_action_mask = jnp.arange(self.action_horizon)[None, :] < delay[:, None]
             time_expanded = time[..., None, None]
-            time_delay = jnp.where(prefix_action_mask, 0.0, time[None, :])  # Creates array where the first "delay" actions have time=0 (no noise) and the rest have the sampled time value. 
+            
+            time_delay = jnp.where(prefix_action_mask, 0.0, time[:, None])  # Creates array where the first "delay" actions have time=0 (no noise) and the rest have the sampled time value. 
             
             x_t = time_expanded * noise + (1 - time_expanded) * actions
             prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
@@ -745,7 +749,7 @@ class Pi05(_model.BaseModel):
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
             loss = jnp.square(v_t - u_t)
             postfix_action_mask = ~prefix_action_mask[:, :, None]
-            loss = jnp.sum(loss*postfix_action_mask) / (jnp.sum(postfix_action_mask) + 1e-8) # computing the mean over only the action postfix tokens, i.e. the predicted tokens
+            loss = jnp.sum(loss*postfix_action_mask, axis=-1) / (jnp.sum(postfix_action_mask, axis=-1) + 1e-8) # computing the mean over only the action postfix tokens, i.e. the predicted tokens
             return loss 
 
 
@@ -763,7 +767,7 @@ class Pi05(_model.BaseModel):
             noise = jax.random.normal(noise_rng, actions.shape)
             time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
             time_expanded = time[..., None, None]
-            time = jnp.repeat(time_expanded, self.action_horizon).reshape(1,-1)
+            time = jnp.repeat(time[:, None], self.action_horizon, axis=1)#.reshape(1,-1)
             x_t = time_expanded * noise + (1 - time_expanded) * actions
             u_t = noise - actions
 
@@ -775,6 +779,8 @@ class Pi05(_model.BaseModel):
             We call on the Paligemma LLM using both the backbone (prefix) and the action expert (suffix) to generate suffix_out, which we further use to generate our velocity field v_t trough a linear projection. 
             This v_t is the prediction we want to match u_t. 
             """
+            
+            
             prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
             input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
