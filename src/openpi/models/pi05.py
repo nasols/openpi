@@ -338,7 +338,7 @@ class Pi05(_model.BaseModel):
         at.Float[at.Array, "b s emb"],
         at.Bool[at.Array, "b s"],
         at.Bool[at.Array, " s"],
-        at.Float[at.Array, "b *ad emb"] | None, # Allows adarms to be shaped [b, ad, emb], i.e. (batch, 15, 1024) for per-token time embedding.
+        at.Float[at.Array, "b s emb"] | None, # Allows adarms to be shaped [b, ad, emb], i.e. (batch, 15, 1024) for per-token time embedding.
     ]:
         input_mask = []
         ar_mask = []
@@ -729,11 +729,11 @@ class Pi05(_model.BaseModel):
 
             prefix_action_mask = jnp.arange(self.action_horizon)[None, :] < delay[:, None]
             time_expanded = time[..., None, None]
-            time = jnp.where(prefix_action_mask, 0.0, time)  # Creates array where the first "delay" actions have time=1 (no noise) and the rest have the sampled time value. 
+            time_delay = jnp.where(prefix_action_mask, 0.0, time[None, :])  # Creates array where the first "delay" actions have time=0 (no noise) and the rest have the sampled time value. 
             
             x_t = time_expanded * noise + (1 - time_expanded) * actions
             prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time_delay)
             input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
             ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
             attn_mask = make_attn_mask(input_mask, ar_mask)

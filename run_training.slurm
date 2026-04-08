@@ -7,8 +7,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=120G
-#SBATCH --job-name="expanded_mixed_01"
-#SBATCH --output=../slurm_outputs/JOB_OUTPUT_expanded_mixed_01.out
+#SBATCH --job-name="RTC_expanded_mixed_01"
+#SBATCH --output=../slurm_outputs/JOB_OUTPUT_RTC_expanded_mixed_01.out
 #SBATCH --mail-user=jonasbol@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
@@ -20,4 +20,4 @@ export HYDRA_FULL_ERROR=1
 export CONDA_ROOT_PREFIX=/cluster/home/jonasbol/conda
 source $CONDA_ROOT_PREFIX/.venv/bin/activate
 
-uv run scripts/train.py pi05_droid_finetune_2 --exp-name=expanded_mixed-01 --overwrite
+uv run scripts/train.py pi05_droid_finetune --exp-name=RTC_expanded_mixed_01 --overwrite
