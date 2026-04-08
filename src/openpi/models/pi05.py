@@ -123,7 +123,6 @@ def posemb_sincos(
         raise ValueError(f"embedding_dim ({embedding_dim}) must be divisible by 2")
 
     original_shape = pos.shape # (32, 15)
-    logger.log(level=103, msg=f"FROM POSEMB_SINCOS: Original position shape: {original_shape}")
     pos_flat = pos.reshape(-1)
     fraction = jnp.linspace(0.0, 1.0, embedding_dim // 2) # 512 arr
     period = min_period * (max_period / min_period) ** fraction  # 512 arr 
@@ -369,7 +368,6 @@ class Pi05(_model.BaseModel):
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
-        logger.log(level=103, msg=f"ADRAMS SHAPE: {adarms_cond.shape}")
         # adarms_cond = adarms_cond.reshape(tokens.shape)
         return tokens, input_mask, ar_mask, adarms_cond
     
