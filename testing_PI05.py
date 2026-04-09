@@ -295,7 +295,7 @@ class TestPI05:
         model_transforms = _transforms.compose(data_config.model_transforms.inputs)
         
 
-        inputs = jax.tree.map(lambda x: x, self.dummy) 
+        inputs = jax.tree.map(lambda x: x, dummy_w_actions) 
         inputs = data_input_transforms(inputs) 
         inputs = model_transforms(inputs)
         
@@ -380,7 +380,6 @@ class TestPI05:
         print("GETITEM WORKED!")
         pass     
 
-
     def test_batch_32_observation_pipeline(self):
         """Test the training pipeline with a batch of 32 observations."""
         # Step 1: Create a batched observation
@@ -420,7 +419,8 @@ if __name__ == "__main__":
     
     # test_pi05.test_compute_fast_loss()
     # test_pi05.test_subtask_generation()
-    prefix_out = test_pi05.test_batch_32_observation_pipeline()
+    # prefix_out = test_pi05.test_batch_32_observation_pipeline()
+    prefix_out = test_pi05.test_compute_loss()
     # print(prefix_out)
     
     # test_pi05.test_mixed_training()
