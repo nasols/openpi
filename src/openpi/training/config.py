@@ -1047,9 +1047,9 @@ _CONFIGS = [
         model=pi05_config.Pi05Config(
             action_dim=32,  # pi05 is trained with 32-dim actions
             action_horizon=15,  
-            ki_mode=True, 
+            ki_mode=False, 
             hi_mode=False,
-            guided_inference=False
+            guided_inference=True
         ),
 
         data=LeRobotDROIDDataConfig(
