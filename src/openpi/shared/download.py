@@ -50,6 +50,10 @@ def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathl
     # Short circuit if this is a local path.
     if parsed.scheme == "":
         path = pathlib.Path(url)
+        
+        # # HACK
+        # path = pathlib.Path("/media/ril_mtplab/HDD 2TB1/vla/checkpoints/pi05_droid_finetune/RTC_expanded_mixed_01/4000")
+
         if not path.exists():
             raise FileNotFoundError(f"File not found at {url}")
         return path.resolve()
