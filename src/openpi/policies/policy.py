@@ -101,7 +101,7 @@ class Policy(BasePolicy):
             self._rng = rng or jax.random.key(0)
 
     @override
-    def infer(self, obs: dict, *, noise: np.ndarray | None = None, s: int|None=None, d:int|None=None, j:int|None=None) -> dict:  # type: ignore[misc]
+    def infer(self, obs: dict, *, noise: np.ndarray | None = None, s: int|None=None, d:int|None=None, j:int|None=None, reset_prev_chunk=False) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
@@ -132,6 +132,9 @@ class Policy(BasePolicy):
             sample_kwargs["s"] = s
             sample_kwargs["j"] = j
             #self._previous_action_chunk = _gen_sample_action(action_horizon=15, action_dim=32)
+            if reset_prev_chunk:
+                self._previous_action_chunk = None
+
             sample_kwargs["A_prev"] = self._previous_action_chunk[:, s:, :] if self._previous_action_chunk is not None else None  
         else: 
             print("[DEBUG] Not running guided inference")
@@ -179,8 +182,9 @@ class Policy(BasePolicy):
         
         start_time = time.monotonic()
 
+        # actions, hist = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         actions, hist = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
-
+        # hist = None
         
         if self._guided_inference: 
             self._previous_action_chunk = actions   
@@ -189,13 +193,16 @@ class Policy(BasePolicy):
         outputs = {
             "state": inputs["state"],
             "actions": actions,
-            "hist": hist,
+            # "hist": hist,
         }
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
         else:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+
+        # logger.log(level=103, msg=f"[DEBUG] Logging data from output transform: {outputs}")
+        # print(f"[DEBUG] Logging data from output transform: {outputs}")
 
         outputs = self._output_transform(outputs)
         outputs["policy_timing"] = {

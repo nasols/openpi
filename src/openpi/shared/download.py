@@ -51,8 +51,10 @@ def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathl
     if parsed.scheme == "":
         path = pathlib.Path(url)
         
-        # # HACK
-        # path = pathlib.Path("/media/ril_mtplab/HDD 2TB1/vla/checkpoints/pi05_droid_finetune/RTC_expanded_mixed_01/4000")
+        # HACK
+        # path = pathlib.Path("/media/ril_mtplab/HDD 2TB/vla/checkpoints/pi05_droid_finetune/expanded_mixed_01/1000")
+        path = pathlib.Path("/media/ril_mtplab/HDD 2TB1/vla/checkpoints/pi05_droid_finetune/RTC_expanded_mixed_01/4000")
+        
 
         if not path.exists():
             raise FileNotFoundError(f"File not found at {url}")

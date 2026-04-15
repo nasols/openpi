@@ -6,6 +6,11 @@ import numpy as np
 from openpi import transforms
 from openpi.models import model as _model
 
+import logging 
+
+
+logger = logging.getLogger("openpi")
+
 
 def make_droid_example() -> dict:
     """Creates a random input example for the Droid policy."""
@@ -82,5 +87,6 @@ class DroidInputs(transforms.DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class DroidOutputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
+        # logger.log(level=103, msg=f"[DEBUG] Logging data from output transform: {data}")
         # Only return the first 8 dims.
         return {"actions": np.asarray(data["actions"][:, :8])}

@@ -19,6 +19,30 @@ from openpi.policies.planner import HighLevelPlanner
 
 import time
 
+import psutil
+
+
+def create_dummy_observation_DROID() -> dict : 
+        """Creates a random input example for the Droid policy."""
+        return {
+            "observation/exterior_image_1_left": cv2.imread("./plannerimages/midrun2_ext.png"),
+            "observation/wrist_image_left": cv2.imread("./plannerimages/midrun2_wrist.png"),  
+            "observation/joint_position": np.random.rand(7),
+            "observation/gripper_position": np.random.rand(1),
+            "prompt": "Place all the cubes in the gray box.",
+            "subtask": None
+        }
+    
+def create_dummy_observation_DROID_HI(self) -> dict :
+    """Creates a random input example for the Droid HI policy."""
+    return {
+        "observation/exterior_image_1_left": cv2.imread("./franka_ext_view.jpg"), #np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+        "observation/wrist_image_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+        "observation/joint_position": np.random.rand(7),
+        "observation/gripper_position": np.random.rand(1),
+        "prompt": "pick up the cube",
+        "subtask": "move towards the red cube",
+    }
 
 def print_dict_shapes(obs:dict) -> None :
 
@@ -58,9 +82,9 @@ class TestPI05:
 
     def load_policy(self): 
         self.config = _config.get_config("pi05_droid_finetune")  
-        # checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
-        # self.policy = policy_config.create_trained_policy(self.config, checkpoint_dir)
-        # self.model : Pi05 = self.policy._model
+        checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi05_droid")
+        self.policy = policy_config.create_trained_policy(self.config, checkpoint_dir)
+        self.model : Pi05 = self.policy._model
         self.rng = jax.random.PRNGKey(0)
 
     def warmup(self): 
@@ -161,27 +185,7 @@ class TestPI05:
         return jnp.mean(jnp.square(v_t - u_t), axis=-1)
 
 
-    def create_dummy_observation_DROID() -> dict : 
-        """Creates a random input example for the Droid policy."""
-        return {
-            "observation/exterior_image_1_left": cv2.imread("./franka_ext_view.jpg"),
-            "observation/wrist_image_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),  
-            "observation/joint_position": np.random.rand(7),
-            "observation/gripper_position": np.random.rand(1),
-            "prompt": "pick up the cube then place it in the middle of the table.",
-            "subtask": None
-        }
     
-    def create_dummy_observation_DROID_HI(self) -> dict :
-        """Creates a random input example for the Droid HI policy."""
-        return {
-            "observation/exterior_image_1_left": cv2.imread("./franka_ext_view.jpg"), #np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
-            "observation/wrist_image_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
-            "observation/joint_position": np.random.rand(7),
-            "observation/gripper_position": np.random.rand(1),
-            "prompt": "pick up the cube",
-            "subtask": "move towards the red cube",
-        }
     
     def create_batched_dummy_raw_observation_DROID(self, batch_dim=32) -> dict:
         samples = [self.create_dummy_observation_DROID() for _ in range(batch_dim)]
@@ -286,7 +290,7 @@ class TestPI05:
     def test_compute_loss(self): 
         assert isinstance(self.model, Pi05), "Model should be an instance of Pi05 for this test."
 
-        self.dummy = self.create_dummy_observation_DROID()
+        self.dummy = create_dummy_observation_DROID()
         self.actions = np.random.randn(15, 8).astype(np.float32)        
         
         dummy_w_actions = self.dummy.copy()
@@ -430,9 +434,17 @@ class TestPI05:
 
 
 if __name__ == "__main__":
+
+    process = psutil.Process(os.getpid())
+    print(f"Memory used: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
     
-    # test_pi05 = TestPI05()
-    # print("Model type:", test_pi05.model.model_type)
+    test_pi05 = TestPI05()
+    print("Model type:", test_pi05.model.model_type)
+    
+    process = psutil.Process(os.getpid())
+    print(f"Memory used: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
     # assert isinstance(test_pi05.model, Pi05), "Loaded model should be an instance of Pi05"
     # test_pi05.warmup()
 
@@ -441,7 +453,7 @@ if __name__ == "__main__":
     # test_pi05.test_compute_fast_loss()
     # test_pi05.test_subtask_generation()
     # prefix_out = test_pi05.test_batch_32_observation_pipeline()
-    # prefix_out = test_pi05.test_compute_loss()
+    prefix_out = test_pi05.test_compute_loss()
     # print(prefix_out)
     
 
@@ -476,21 +488,28 @@ if __name__ == "__main__":
 
 
 
-    dummy = TestPI05.create_dummy_observation_DROID()
-    config = _config.get_config("pi05_droid_finetune")  
-    planner = HighLevelPlanner(config)
+    # dummy = TestPI05.create_dummy_observation_DROID()
+    # config = _config.get_config("pi05_droid_finetune")  
+
+    # process = psutil.Process(os.getpid())
+    # print(f"Memory used: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+    # planner = HighLevelPlanner(config)
+
+    # process = psutil.Process(os.getpid())
+    # print(f"Memory used: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
 
-    data_config = config.data.create(config.assets_dirs, config.model)
-    data_input_transforms = _transforms.compose(data_config.data_transforms.inputs)
-    model_transforms = _transforms.compose(data_config.model_transforms.inputs)
-    inputs = jax.tree.map(lambda x: x, dummy)
-    inputs = data_input_transforms(inputs)
-    inputs = model_transforms(inputs)
-    inputs = jax.tree.map(
-        lambda x: jnp.asarray(x)[np.newaxis, ...],
-        inputs
-    )
-    observation = _model.Observation.from_dict(inputs) 
-    planner_output = planner.generate_subtask(observation)
-    print(f"Planner output: {planner_output}")
+    # data_config = config.data.create(config.assets_dirs, config.model)
+    # data_input_transforms = _transforms.compose(data_config.data_transforms.inputs)
+    # model_transforms = _transforms.compose(data_config.model_transforms.inputs)
+    # inputs = jax.tree.map(lambda x: x, dummy)
+    # inputs = data_input_transforms(inputs)
+    # inputs = model_transforms(inputs)
+    # inputs = jax.tree.map(
+    #     lambda x: jnp.asarray(x)[np.newaxis, ...],
+    #     inputs
+    # )
+    # observation = _model.Observation.from_dict(inputs) 
+    # planner_output = planner.generate_subtask(observation)
+    # print(f"Planner output: {planner_output}")

@@ -299,6 +299,44 @@ class Pi05(_model.BaseModel):
         return mean_loss
 
     @at.typecheck
+    def embed_inputs(
+        self, obs: _model.Observation
+    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Int[at.Array, "b s"]]:
+        input_mask = []
+        ar_mask = []
+        token_embeddings = []
+        # embed images
+        for name in obs.images:
+            image_token_embeddings, _ = self.PaliGemma.img(obs.images[name], train=False)
+
+            token_embeddings.append(image_token_embeddings)
+            input_mask.append(
+                einops.repeat(
+                    obs.image_masks[name],
+                    "b -> b s",
+                    s=image_token_embeddings.shape[1],
+                )
+            )
+            # image tokens attend to each other --> AR mask = 0
+            ar_mask.append(0 * input_mask[-1])
+
+        # add tokenized inputs
+        assert obs.tokenized_prompt is not None, "Tokenized prompt is required"
+        assert obs.tokenized_prompt_mask is not None, "Tokenized prompt mask is required"
+        assert obs.token_ar_mask is not None, "Token auto-regressive mask is required"
+        tokenized_inputs_embeddings = self.PaliGemma.llm(obs.tokenized_prompt, embed_only=True)
+        token_embeddings.append(tokenized_inputs_embeddings)
+        input_mask.append(obs.tokenized_prompt_mask)
+        ar_mask.append(obs.token_ar_mask)
+
+        # return embeddings, input mask, and ar mask
+        return (
+            jnp.concatenate(token_embeddings, axis=1),
+            jnp.concatenate(input_mask, axis=1),
+            jnp.concatenate(ar_mask, axis=1),
+        )
+    
+    @at.typecheck
     def embed_prefix(
         self, obs: _model.Observation
     ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
@@ -326,7 +364,9 @@ class Pi05(_model.BaseModel):
             tokens.append(tokenized_inputs)
             input_mask.append(obs.tokenized_prompt_mask) # indicating global tokens vs padding
             # full attention between image and language inputs
+            
             ar_mask += [False] * tokenized_inputs.shape[1]
+    
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
@@ -373,7 +413,7 @@ class Pi05(_model.BaseModel):
     
     @override
     def compute_loss_ki(
-        self, rng:at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train:bool=False
+        self, rng:at.KeyArrayLike, observation: _model.Observation, actions_FAST: _model.Actions, *, train:bool=False
     ) -> at.Float[at.Array, "*b ah"]: 
         
         """
@@ -408,67 +448,72 @@ class Pi05(_model.BaseModel):
         ######## FAST LOSS - Compute VLM forward and cache results ########
         ###################################################################
 
-        tokens_up_to_FAST = observation.tokenized_prompt * ~observation.action_token_mask
-        FAST_tokens = observation.tokenized_prompt * observation.action_token_mask
+        input_token_embeddings, input_mask, ar_mask = self.embed_inputs(observation)
+        attn_mask = make_attn_mask(input_mask, ar_mask)
+
+
+        # logger.log(level=103, msg=f"Tokenized prompt shape: {observation.tokenized_prompt.shape}")
+        # tokens_up_to_FAST = observation.tokenized_prompt * ~observation.action_token_mask
+        # FAST_tokens = observation.tokenized_prompt * observation.action_token_mask
               
-        gt_fast_only, gt_fast_mask = _pack_sequence_by_first_true(
-            FAST_tokens,
-            observation.action_token_mask,
-        )
+        # gt_fast_only, gt_fast_mask = _pack_sequence_by_first_true(
+        #     FAST_tokens,
+        #     observation.action_token_mask,
+        # )
 
-        base_prompt_obs = _model.Observation(
-            images=observation.images,
-            image_masks=observation.image_masks,
-            state=observation.state,
-            tokenized_prompt=tokens_up_to_FAST,
-            tokenized_prompt_mask=~observation.action_token_mask,  # Only valid for base
-            token_ar_mask=None,
-            token_loss_mask=None,
-        )
+        # base_prompt_obs = _model.Observation(
+        #     images=observation.images,
+        #     image_masks=observation.image_masks,
+        #     state=observation.state,
+        #     tokenized_prompt=tokens_up_to_FAST,
+        #     tokenized_prompt_mask=~observation.action_token_mask,  # Only valid for base
+        #     token_ar_mask=None,
+        #     token_loss_mask=None,
+        # )
 
-        # Teacher-forced FAST prediction: [images + base prompt] + [GT FAST tokens]
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(base_prompt_obs)
-        gt_fast_embeddings = self.PaliGemma.llm(gt_fast_only, method="embed")
+        # # Teacher-forced FAST prediction: [images + base prompt] + [GT FAST tokens]
+        # prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(base_prompt_obs)
+        # gt_fast_embeddings = self.PaliGemma.llm(gt_fast_only, method="embed")
 
-        full_prefix_tokens = jnp.concatenate([prefix_tokens, gt_fast_embeddings], axis=1)
-        full_prefix_mask = jnp.concatenate([prefix_mask, gt_fast_mask], axis=1)
-        fast_ar_mask = jnp.ones(gt_fast_embeddings.shape[1], dtype=bool)
-        full_ar_mask = jnp.concatenate([prefix_ar_mask, fast_ar_mask])
+        # full_prefix_tokens = jnp.concatenate([prefix_tokens, gt_fast_embeddings], axis=1)
+        # full_prefix_mask = jnp.concatenate([prefix_mask, gt_fast_mask], axis=1)
+        # fast_ar_mask = jnp.ones(gt_fast_embeddings.shape[1], dtype=bool)
+        # full_ar_mask = jnp.concatenate([prefix_ar_mask, fast_ar_mask])
 
-        prefix_attn_mask = make_attn_mask(full_prefix_mask, full_ar_mask)
-        prefix_positions = jnp.cumsum(full_prefix_mask, axis=1) - 1
+        # prefix_attn_mask = make_attn_mask(full_prefix_mask, full_ar_mask)
+        # prefix_positions = jnp.cumsum(full_prefix_mask, axis=1) - 1
 
-        (prefix_out_FAST, _), kv_cache = self.PaliGemma.llm(
-                [full_prefix_tokens, None],
-                mask=prefix_attn_mask,
-                positions=prefix_positions,
-        )
+        # (prefix_out_FAST, _), kv_cache = self.PaliGemma.llm(
+        #         [full_prefix_tokens, None],
+        #         mask=prefix_attn_mask,
+        #         positions=prefix_positions,
+        # )
 
-        # Compute FAST text loss over teacher-forced FAST tokens.
-        per_token_fast_loss = optax.softmax_cross_entropy_with_integer_labels(
-            jnp.einsum(
-                'bse,ve->bsv',
-                prefix_out_FAST[:, -(gt_fast_only.shape[1] + 1):-1],
-                self.PaliGemma.llm.embedder["input_embedding"],
-                optimize='optimal',
-            ),
-            gt_fast_only,
-        )
-        masked_fast_loss = per_token_fast_loss * gt_fast_mask.astype(jnp.float32)
-        FAST_loss = jnp.mean(
-            jnp.sum(masked_fast_loss, axis=-1)
-            / jnp.clip(jnp.sum(gt_fast_mask, axis=-1), 1)
-        )
-        kv_cache_detached = jax.tree.map(jax.lax.stop_gradient, kv_cache)
+        # # Compute FAST text loss over teacher-forced FAST tokens.
+        # per_token_fast_loss = optax.softmax_cross_entropy_with_integer_labels(
+        #     jnp.einsum(
+        #         'bse,ve->bsv',
+        #         prefix_out_FAST[:, -(gt_fast_only.shape[1] + 1):-1],
+        #         self.PaliGemma.llm.embedder["input_embedding"],
+        #         optimize='optimal',
+        #     ),
+        #     gt_fast_only,
+        # )
+        # masked_fast_loss = per_token_fast_loss * gt_fast_mask.astype(jnp.float32)
+        # FAST_loss = jnp.mean(
+        #     jnp.sum(masked_fast_loss, axis=-1)
+        #     / jnp.clip(jnp.sum(gt_fast_mask, axis=-1), 1)
+        # )
+        # kv_cache_detached = jax.tree.map(jax.lax.stop_gradient, kv_cache)
 
 
-        logger.log(level=103, msg=f"tokens_up_to_FAST shape: {tokens_up_to_FAST.shape}")
-        logger.log(level=103, msg=f"FAST_tokens shape: {FAST_tokens.shape}")
-        logger.log(level=103, msg=f"prefix_tokens shape: {prefix_tokens.shape}")
-        logger.log(level=103, msg=f"gt_fast_embeddings shape: {gt_fast_embeddings.shape}")
-        logger.log(level=103, msg=f"prefix_attn_mask shape: {prefix_attn_mask.shape}")
-        logger.log(level=103, msg=f"ki_kv_cache shape: {kv_cache_detached[0].shape, kv_cache_detached[1].shape}")
-        return FAST_loss, kv_cache_detached
+        # logger.log(level=103, msg=f"tokens_up_to_FAST shape: {tokens_up_to_FAST.shape}")
+        # logger.log(level=103, msg=f"FAST_tokens shape: {FAST_tokens.shape}")
+        # logger.log(level=103, msg=f"prefix_tokens shape: {prefix_tokens.shape}")
+        # logger.log(level=103, msg=f"gt_fast_embeddings shape: {gt_fast_embeddings.shape}")
+        # logger.log(level=103, msg=f"prefix_attn_mask shape: {prefix_attn_mask.shape}")
+        # logger.log(level=103, msg=f"ki_kv_cache shape: {kv_cache_detached[0].shape, kv_cache_detached[1].shape}")
+        # return FAST_loss, kv_cache_detached
 
 
 
@@ -714,13 +759,32 @@ class Pi05(_model.BaseModel):
         if self.ki_mode:
             # If ki_mode enabled, we expect the prompt in obs to look like "Task: {task}; State: {state};\n Action: {FAST tokens}" with masks indicating which tokens are the FAST tokens.  
             logger.log(level=103, msg="Computing KI loss")
-            ki_loss, ki_kv_cache= self.compute_loss_ki(rng, observation, actions, train=train)
+            # Should pull out the FAST tokens here, and use these embeddings as input in the ki loss call 
+            # + later when appending the prefix (which is the prompt + images) to the suffix which is the FAST tokens 
+            FAST_tokens = observation.tokenized_prompt * observation.action_token_mask
+            base_prompt = observation.tokenized_prompt * ~observation.action_token_mask
+
+            ki_loss, ki_kv_cache= self.compute_loss_ki(rng, observation, FAST_tokens, train=train)
+            
+            observation = _model.Observation(
+                images=observation.images,
+                image_masks=observation.image_masks,
+                state=observation.state,
+                tokenized_prompt=base_prompt, # <- Prompt at this point is "Task: ...; State: ...; \n Action: " shaped [1, 200]
+                tokenized_prompt_mask=~observation.action_token_mask,  #Should be True up to "Action:" and False after, shaped [1, 200]
+                token_ar_mask=None,
+                token_loss_mask=None
+            )
+
         else: 
             ki_loss = 0.0
             ki_kv_cache = None
+            FAST_tokens = None 
+            base_prompt = None
 
         if self.config.guided_inference: 
             logger.log(level=103, msg="Computing guided inference loss")
+            logger.log(level=103, msg=f"Observation tokenized prompt in guided_inference loss call: {self.tokenizer.decode(observation.tokenized_prompt)}")
             batch_shape = actions.shape[:-2]
             preprocess_rng, noise_rng, time_rng, delay_rng = jax.random.split(rng, 4)
             delay = jax.random.randint(delay_rng, batch_shape, 0, self.max_delay)
@@ -930,7 +994,7 @@ class Pi05(_model.BaseModel):
 
         return x_final, hist
 
-    @override
+    # @override
     # def sample_actions(
     #     self,
     #     rng: at.KeyArrayLike,

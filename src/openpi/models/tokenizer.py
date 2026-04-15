@@ -67,6 +67,62 @@ class PaligemmaTokenizer:
 
         return np.asarray(tokens), np.asarray(mask)
     
+    def tokenize_FAST(
+        self, prompt: str, state: np.ndarray, actions: np.ndarray | None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        cleaned_text = prompt.lower().strip().replace("_", " ")
+
+        # Convention: state gets discretized into 256 discrete bins (assumed range after normalization: [-1, 1])
+        discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+
+        # Convention: prefix includes prompt and string-representation of state, followed by ';'
+        state_str = " ".join(map(str, discretized_state))
+        prefix = f"Task: {cleaned_text}, State: {state_str};\n"
+        prefix_tokens = self._tokenizer.encode(prefix, add_bos=True)
+
+        if actions is not None:
+            # Tokenize actions with FAST tokenizer --> map to last tokens in PaliGemma vocab
+            action_tokens = self._fast_tokenizer(actions[None])[0]
+            action_tokens_in_pg = self._act_tokens_to_paligemma_tokens(action_tokens)
+
+            # Convention: postfix contains 'Action:' followed by FAST tokens, followed by '|'
+            postfix_tokens = (
+                self._tokenizer.encode("Action: ")
+                + action_tokens_in_pg.tolist()
+                + self._tokenizer.encode("|", add_eos=True)
+            )
+        else:
+            postfix_tokens = []
+
+        # Create output token sequence & masks
+        # AR mask is 0 on prefix (bidirectional attention) and 1 on postfix (causal attention to all previous tokens)
+        tokens = prefix_tokens + postfix_tokens
+        token_mask = [True] * len(tokens)
+        ar_mask = [0] * len(prefix_tokens) + [1] * len(postfix_tokens)
+        loss_mask = [False] * len(prefix_tokens) + [True] * len(postfix_tokens)  # Loss on postfix only
+
+        # Pad tokens to max length
+        tokens_len = len(tokens)
+        if tokens_len < self._max_len:
+            padding = [False] * (self._max_len - tokens_len)
+            tokens = tokens + padding
+            token_mask = token_mask + padding
+            ar_mask = ar_mask + padding
+            loss_mask = loss_mask + padding
+        else:
+            if len(tokens) > self._max_len:
+                logging.warning(
+                    f"Token length ({len(tokens)}) exceeds max length ({self._max_len}), truncating. "
+                    "Consider increasing the `max_token_len` in your model config if this happens frequently."
+                )
+            tokens = tokens[: self._max_len]
+            token_mask = token_mask[: self._max_len]
+            ar_mask = ar_mask[: self._max_len]
+            loss_mask = loss_mask[: self._max_len]
+
+        return np.asarray(tokens), np.asarray(token_mask), np.asarray(ar_mask), np.asarray(loss_mask)
+
+
     def tokenize_subtask(self, prompt:str, state:np.ndarray) -> tuple[np.ndarray, np.ndarray]: 
         """
         Function used to tokenize the prompt for producing subtasks in the HI-robot pipeline. 
@@ -172,7 +228,7 @@ class PaligemmaTokenizer:
         else: 
             sub_prompt = f"Task: {cleaned_prompt}; State: {state};\nAction: "
             prompt_tokens = self._tokenizer.encode(sub_prompt, add_bos=True, add_eos=False)
-            ar_mask = [True]*len(prompt_tokens) # Causal attention for the entire prompt including "Action: ".
+            ar_mask = [0]*len(prompt_tokens) # Causal attention for the entire prompt including "Action: ".
             loss_mask = [False]*len(prompt_tokens) # No loss on prompt and state tokens
             subtask_token_mask = [False]*len(prompt_tokens) # Indicating that these tokens are not subtask tokens
             action_token_mask = [False]*len(prompt_tokens) # Indicating that these tokens are not action tokens
@@ -234,7 +290,7 @@ class PaligemmaTokenizer:
             action_tokens =  action_tokens_in_pg.tolist() + self._tokenizer.encode("|", add_eos=True, add_bos=False)
 
             tokens += action_tokens # Now tokens looks like "Task: xxx; State: xxx; Subtask: xxx \n Action: <FAST_ACTION_TOKENS> |"
-            ar_mask += [True]*len(action_tokens) 
+            ar_mask += [1]*len(action_tokens) 
             subtask_loss_mask += [False]*len(action_tokens) # No loss on action tokens for subtask prediction
             action_loss_mask += [True]*len(action_tokens) # Loss on action tokens for action prediction
             subtask_token_mask += [False]*len(action_tokens) # Action tokens are not subtask tokens

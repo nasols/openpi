@@ -10,9 +10,28 @@ import PIL
 import json
 import torch 
 import time
+import re
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
+
+def fallback_parse(text: str):
+    """
+    Parses output string from model to look for datafields we expect. 
+    """
+    subtask_match = re.search(r'"subtask"\s*:\s*"([^"]*)"', text)
+    done_match = re.search(r'"done"\s*:\s*(true|false)', text, re.IGNORECASE)
+    confidence_match = re.search(r'"confidence"\s*:\s*([0-9]*\.?[0-9]+)', text)
+
+    if not subtask_match or not done_match or not confidence_match:
+        raise ValueError("Could not recover required fields")
+
+    return {
+        "subtask": subtask_match.group(1),
+        "done": done_match.group(1).lower() == "true",
+        "confidence": float(confidence_match.group(1)),
+    }
 
 
 print(f"Using device: {device}")
@@ -34,7 +53,7 @@ class PlannerOutput:
     subtask: str
     done: bool = False
     confidence: float | None = None
-    raw_response = None
+    raw_response: dict | None = None
 
 
 class HighLevelPlanner():
@@ -92,11 +111,8 @@ class HighLevelPlanner():
             response_obj = json.loads(output_text)
         except json.JSONDecodeError as e:
             print(f"JSON decoding error: {e}")
-            response_obj = {
-                "subtask": "",
-                "done": False,
-                "confidence": 0.0
-            }
+            response_obj = fallback_parse(output_text)
+
         subtask_string = response_obj["subtask"]
         subtask_done = response_obj["done"]
         confidence = response_obj["confidence"]
@@ -111,8 +127,6 @@ class HighLevelPlanner():
             confidence = subtask_done,
             raw_response = response_obj
         )
-        
-         
 
     def check_plan_status(self, observation: Observation) -> PlanState:
         pass
@@ -120,8 +134,9 @@ class HighLevelPlanner():
     def process_input(self, observation: Observation) :
         task_prompt : str = self.pi_tokenizer.decode(observation.tokenized_prompt) 
         prompt : str = f"""
-        Return a subtask to the given task that the robot should do in order to complete the task.
-        The subtask should be precise and concise. 
+        Make a subtask from a given task and current observation. The subtask should be the next step towards completing the overall task. 
+        The returned subtask should be a single, specific action that should be performed next. 
+        Examples inclide "pick up the *color* cube", "place the *item* in the container", "move back to starting position", etc.
         Use the images to generate the subtask. 
         Return exactly one JSON object and nothing else.
         Do not use markdown.
