@@ -188,11 +188,11 @@ class TestPI05:
     
     
     def create_batched_dummy_raw_observation_DROID(self, batch_dim=32) -> dict:
-        samples = [self.create_dummy_observation_DROID() for _ in range(batch_dim)]
+        samples = [create_dummy_observation_DROID() for _ in range(batch_dim)]
         return jax.tree.map(lambda *xs: np.stack(xs, axis=0), *samples)
     
     def test_data_transforms(self): 
-        self.dummy = self.create_dummy_observation_DROID()
+        self.dummy = create_dummy_observation_DROID()
         self.actions = np.random.randn(15, 8).astype(np.float32)        
         
         dummy_w_actions = self.dummy.copy()
@@ -328,7 +328,7 @@ class TestPI05:
         #     print("creating HI dummy data")
         #     self.dummy = self.create_dummy_observation_DROID_HI()
         # else: 
-        self.dummy = self.create_dummy_observation_DROID()
+        self.dummy = create_dummy_observation_DROID()
 
         data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
         data_input_transforms = _transforms.compose(data_config.data_transforms.inputs)
@@ -399,8 +399,9 @@ class TestPI05:
         # Step 3: Apply transformations to each sample
         data_config = self.config.data.create(self.config.assets_dirs, self.config.model)
         data_input_transforms = _transforms.compose(data_config.data_transforms.inputs)
+        model_transforms = _transforms.compose(data_config.model_transforms.inputs)
         transformed_samples = [data_input_transforms(sample) for sample in individual_samples]
-
+        transformed_samples = [model_transforms(sample) for sample in transformed_samples]
         # Step 4: Recombine transformed samples into a batch
         transformed_batched_obs = jax.tree.map(lambda *x: np.stack(x, axis=0), *transformed_samples)
 
@@ -412,7 +413,7 @@ class TestPI05:
 
         # Step 7: Pass through the training pipeline
         loss = self.model.compute_loss(self.rng, observation, actions, train=True)
-        print(f"Computed loss: {loss}")
+        print(f"Compute loss shape: {loss.shape}, Computed loss: {loss}")
 
     def test_planner(self):
         planner = HighLevelPlanner(self.config)
@@ -452,8 +453,8 @@ if __name__ == "__main__":
     
     # test_pi05.test_compute_fast_loss()
     # test_pi05.test_subtask_generation()
-    # prefix_out = test_pi05.test_batch_32_observation_pipeline()
-    prefix_out = test_pi05.test_compute_loss()
+    prefix_out = test_pi05.test_batch_32_observation_pipeline()
+    # prefix_out = test_pi05.test_compute_loss()
     # print(prefix_out)
     
 
