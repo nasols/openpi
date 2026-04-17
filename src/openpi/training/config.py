@@ -696,6 +696,7 @@ class TrainConfig:
         """Get the checkpoint directory for this config."""
         if not self.exp_name:
             raise ValueError("--exp_name must be set")
+        print(f"Checkpoint base dir: {self.checkpoint_base_dir}, exp name: {self.exp_name}")
         return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
 
     @property
@@ -1379,8 +1380,13 @@ class PolicyConfig: # Can be expanded with KI and HI pipelines
     checkpoint: str = None
     @property
     def get_checkpoint_dir(self): 
-        if self.exp_name is not None and self.checkpoint is not None: 
-            return pathlib.Path(f"./third_party/openpi/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
+        if self.exp_name is not None and self.checkpoint is not None:
+ 
+            base_checkpoint_dir = pathlib.Path(os.getenv("CHECKPOINT_DIR", "./checkpoints"))
+        
+            
+            return (base_checkpoint_dir / self.config_name / self.exp_name / self.checkpoint).resolve() 
+            return pathlib.Path({base_checkpoint_dir}/{self.config_name}/{self.exp_name}/{self.checkpoint}).resolve()
             return pathlib.Path(f"/media/ril_mtplab/HDD 2TB/vla/checkpoints/{self.config_name}/{self.exp_name}/{self.checkpoint}").resolve()
 
         else: 
