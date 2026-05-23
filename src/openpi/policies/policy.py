@@ -45,6 +45,7 @@ class Policy(BasePolicy):
         hi_mode: bool = False,
         ki_mode: bool = False,
         guided_inference: bool = False,
+        norm_stats: dict | None = None,
   
     ):
         """Initialize the Policy.
@@ -62,6 +63,7 @@ class Policy(BasePolicy):
             hierarchical_mode: If True, use hierarchical planning (HI-robot style).
         """
         self._model:Pi05 = model
+        self._model.norm_stats = norm_stats
         self._input_transform = _transforms.compose(transforms)
         self._output_transform = _transforms.compose(output_transforms)
         self._sample_kwargs = sample_kwargs or {}
@@ -89,7 +91,7 @@ class Policy(BasePolicy):
 
         if self._guided_inference: 
             assert isinstance(self._model, Pi05), "Guided inference is currently only supported for Pi05 models."
-            self._sample_actions = nnx_utils.module_jit(model.guided_inference)
+            self._sample_actions = nnx_utils.module_jit(model.guided_inference_2)
             self._rng = rng or jax.random.key(0)
         elif self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -101,7 +103,7 @@ class Policy(BasePolicy):
             self._rng = rng or jax.random.key(0)
 
     @override
-    def infer(self, obs: dict, *, noise: np.ndarray | None = None, s: int|None=None, d:int|None=None, j:int|None=None, reset_prev_chunk=False) -> dict:  # type: ignore[misc]
+    def infer(self, obs: dict, *, noise: np.ndarray | None = None, s: int|None=None, d:int|None=None, j:int|None=None, reset_prev_chunk=False, lambda_c:float|None=None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
@@ -130,11 +132,11 @@ class Policy(BasePolicy):
             print("[DEBUG] Running guided inference")
             sample_kwargs["d"] = d
             sample_kwargs["s"] = s
-            sample_kwargs["j"] = j
+            # sample_kwargs["j"] = j
+            # sample_kwargs["lambda_c"] = lambda_c
             #self._previous_action_chunk = _gen_sample_action(action_horizon=15, action_dim=32)
             if reset_prev_chunk:
                 self._previous_action_chunk = None
-
             sample_kwargs["A_prev"] = self._previous_action_chunk[:, s:, :] if self._previous_action_chunk is not None else None  
         else: 
             print("[DEBUG] Not running guided inference")
@@ -185,7 +187,7 @@ class Policy(BasePolicy):
         # actions, hist = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         actions, hist = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         # hist = None
-        
+                
         if self._guided_inference: 
             self._previous_action_chunk = actions   
         

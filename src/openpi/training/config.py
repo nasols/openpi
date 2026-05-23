@@ -689,6 +689,7 @@ class TrainConfig:
     @property
     def assets_dirs(self) -> pathlib.Path:
         """Get the assets directory for this config."""
+
         return (pathlib.Path(self.assets_base_dir) / self.name).resolve()
 
     @property
@@ -1053,9 +1054,9 @@ _CONFIGS = [
         model=pi05_config.Pi05Config(
             action_dim=32,  # pi05 is trained with 32-dim actions
             action_horizon=15,  
-            ki_mode=True, 
+            ki_mode=False, 
             hi_mode=False,
-            guided_inference=False
+            guided_inference=True
         ),
 
         data=LeRobotDROIDDataConfig(
@@ -1063,9 +1064,12 @@ _CONFIGS = [
             repo_ids=[
                 # Each dataset can have a different sampling weight
                 # Higher weight = more samples from this dataset during training
-                LeRobotDatasetConfig(repo_id="expanded_lerobot_pickupcube", weight=1.0),
-                LeRobotDatasetConfig(repo_id="expanded_lerobot_pickandplace", weight=1.0), 
+                # LeRobotDatasetConfig(repo_id="expanded_lerobot_pickupcube", weight=1.0),
+                # LeRobotDatasetConfig(repo_id="expanded_lerobot_pickandplace", weight=1.0), 
+                LeRobotDatasetConfig(repo_id="test_valveturning", weight=1.0), 
+    
             ],
+            
             base_config=DataConfig(prompt_from_task=True),
             assets=AssetsConfig(
                 # Important: use the same normalization stats for all datasets
@@ -1075,6 +1079,7 @@ _CONFIGS = [
                 # asset_id="droid",
             ),
         ),
+        # data = FakeDataConfig(),
         
         # data=HiRobotLeRobotDROIDDataConfig(
         #     # Use repo_ids instead of repo_id to specify multiple datasets

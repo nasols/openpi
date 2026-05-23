@@ -117,7 +117,7 @@ def main(data_dir: str, *, push_to_hub: bool = False):
         ]
         print(f"Converting episode with language instruction: {language_instruction}")
 
-        # Write to LeRobot dataset
+        # Write to LeRobot datasetnp.abs(joint_velocities[1:] - joint_velocities[:-1]) < 1e-3,
         for step in trajectory:
             camera_type_dict = step["observation"]["camera_type"]
             wrist_ids = [k for k, v in camera_type_dict.items() if v == 0]
