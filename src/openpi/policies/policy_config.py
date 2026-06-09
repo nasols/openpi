@@ -126,3 +126,69 @@ def create_trained_policy(
     
     
     return policy
+
+
+
+def create_experimental_policy(
+    train_config: _config.TrainConfig,
+    checkpoint_dir: pathlib.Path | str,
+    inference_method: str,
+    num_steps: int
+):
+    from openpi.policies.policy_experimental import PolicyExperimental
+    from openpi.models.pi05_experimental import Pi05Experimental
+    import flax.nnx as nnx
+
+    repack_transforms = transforms.Group()
+    checkpoint_dir = download.maybe_download(str(checkpoint_dir))
+
+    # Check if this is a PyTorch model by looking for model.safetensors
+    weight_path = os.path.join(checkpoint_dir, "model.safetensors")
+    is_pytorch = os.path.exists(weight_path)
+
+    assert not is_pytorch
+    assert isinstance(train_config.model, Pi05Config), "Expect a PI05 Config as we are"
+
+    logger.info("Loading model...")
+
+    # HACK
+    def create_experimental(self, rng):
+        return Pi05Experimental(self, rngs=nnx.Rngs(rng))
+    Pi05Config.create = create_experimental
+
+    model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
+    assert isinstance(model, Pi05Experimental), f"type of model: {type(model)}"
+    
+
+    data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+    if data_config.asset_id is None:
+        raise ValueError("Asset id is required to load norm stats.")
+    norm_stats = _checkpoints.load_norm_stats(checkpoint_dir / "assets", data_config.asset_id)
+
+    # Build transforms
+    input_transforms = [
+        *repack_transforms.inputs,
+        transforms.InjectDefaultPrompt(None),
+        *data_config.data_transforms.inputs,
+        transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+        *data_config.model_transforms.inputs,
+    ]
+    output_transforms = [
+        *data_config.model_transforms.outputs,
+        transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+        *data_config.data_transforms.outputs,
+        *repack_transforms.outputs,
+    ]
+
+    policy = PolicyExperimental(
+        model=model,
+        norm_stats=norm_stats,
+        inference_method=inference_method,
+        num_steps=num_steps,
+        input_transforms=input_transforms,
+        output_transforms=output_transforms,
+        metadata=train_config.policy_metadata,
+    )
+    
+    return policy
+

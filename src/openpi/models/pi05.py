@@ -1143,11 +1143,12 @@ class Pi05(_model.BaseModel):
         - A_prev : the previous action chunk sliced by [:, s:, :] 
         """
 
-        
+        # num_steps = 100
+        q_state = observation.state[:, :7]
         observation = _model.preprocess_observation(None, observation, train=False)
-                
+        num_joints = 8
+        state = observation.state[:, :num_joints] 
         batch_size = observation.state.shape[0]
-        num_joints = 7 
         dt = -1.0 / num_steps
         H = self.action_horizon 
         i = jnp.arange(H) # Time steps within the action horizon
@@ -1188,6 +1189,7 @@ class Pi05(_model.BaseModel):
             ## SCALED RANDOM NORMAL NOISE ##
 
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))*1 # Reduce noise for lower spread
+            # noise = noise.at[:, :, 8].set(noise[:, :, 8]*0.1)
         
             
 
@@ -1225,13 +1227,16 @@ class Pi05(_model.BaseModel):
             x_1, vjp_fun, v_t = jax.vjp(denoiser, x_t, has_aux=True)
             
             # ----- RTC Term -----  
-            e_RTC = ((A_prev - x_1) * W[:, None])
-
+            # e_RTC = jnp.zeros_like(x_1)
+            # e_RTC = e_RTC.at[:, :, :num_joints].set(((A_prev - x_1) * W[:, None])[:, :, :num_joints])
+            e_RTC = (A_prev - x_1) * W[:, None]
             ########################################
             # Positional constraint implementation #
             ########################################
-            # Z_d = jnp.ones((self.action_horizon,))*0.054
-            # Q = state + policy_dt*jnp.cumsum((self.un_normalizer(x_1))[0, :, :7], axis=0)
+            # policy_dt = 1/15
+            # W_c = jnp.ones((self.action_horizon,))*1
+            # Z_d = jnp.ones((self.action_horizon,))*0.1
+            # Q = state[0, :7] + policy_dt*jnp.cumsum((self.un_normalizer(x_1))[0, :, :7], axis=0)
             # Xq = jnp.array([panda_fg_jax(q) for q in Q])
             # # Xlin = jnp.array([x[:3] for x in Xq]) 
             # # Xq_ang = jnp.array([quaternion_to_rpy(x[3], x[4], x[5], x[6]) for x in Xq]) 
@@ -1247,48 +1252,54 @@ class Pi05(_model.BaseModel):
             ###########################################
             # Positional constraint implementation V2 #
             ###########################################
-            # P = jnp.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]) # Selection matrix for z-axis
-            # # W_c = 0.1 + jnp.exp(1.1*jnp.arange(self.action_horizon)/15.0) - 1.0 # Weights for the constraint, can be tuned. Here we use an increasing exponential to put more weight on the later time steps in the horizon, as they are more affected by compounding errors.
-            # W_c = jnp.ones((self.action_horizon,))*2 # All constant, equal weighting across the horizon. Want to hold constraint from time 0 
+            # policy_dt = 1/15
+            # P = jnp.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0]) # Selection matrix for z-axis and orientation.
+            # W_c = 0.1 + jnp.exp(1.1*jnp.arange(self.action_horizon)/15.0) - 1.0 # Weights for the constraint, can be tuned. Here we use an increasing exponential to put more weight on the later time steps in the horizon, as they are more affected by compounding errors.
+            # # W_c = jnp.ones((self.action_horizon,))*1 # All constant, equal weighting across the horizon. Want to hold constraint from time 0 
             # P = jnp.diag(P)
             # W_c = jnp.diag(W_c)
             
             # x_star = jnp.zeros((self.action_horizon, 6))
-            # x_star = x_star.at[:, 2].set(0.065) # Setting the desired z to 0.3 for all time steps in horizon 
+            # x_star = x_star.at[:, 2].set(0.25) # Setting the desired z to 0.3 for all time steps in horizon 
             # q_star = jnp.concat([x_star[:, :3], euler_rpy_to_quat(x_star[:, 3:])], axis=-1)   
 
-            # Q = state + policy_dt*jnp.cumsum((self.un_normalizer(x_1))[0, :, :7], axis=0)           
-            # Xq = jax.vmap(panda_fg_jax)(Q)     
+            # Q = q_state[0, :7] + policy_dt*jnp.cumsum((self.un_normalizer(x_1))[0, :, :7], axis=0)           
+            # Xq = jax.vmap(panda_fg_jax)(Q)   
             
-            # E = jnp.concat([q_star[:, :3] - Xq[:, :3], quat_orientation_error(Xq[:, 3:], q_star[:, 3:])], axis=-1)
+            # E = jnp.concatenate([
+            #     q_star[:, :3] - Xq[:, :3], 
+            #     quat_orientation_error(Xq[:, 3:], q_star[:, 3:])
+            # ], axis=-1)
+
             # G_E = E @ (P@P.T)
             # G_E = (W_c.T@W_c)@G_E
+            
+            # action_mean = jnp.array([-0.00472901866709525, 0.011388235604800786, 0.001825141694746182, 0.028471763133568993, 0.001342906416782047, -0.002978336488361622, 0.0028646739072654254])
+            # action_scale = jnp.array([0.1555912402862041, 0.3074590841735031, 0.1514089017296873, 0.30116801315764397, 0.22751769153326873, 0.24581617376611345, 0.26948180190273524])
 
             # J = jax.vmap(get_jacobian)(Q)
             # G_A = jnp.einsum("tm, tmn -> tn", G_E, J)
             # G_A = policy_dt * reverse_cumsum(G_A)
-            # # G_A = self.normalizer(G_A) 
-            # std_joints = jnp.array([0.1555912402862041, 0.3074590841735031, 0.1514089017296873, 0.30116801315764397, 0.22751769153326873, 0.24581617376611345, 0.26948180190273524])
-            # # G_A = G_A / std_joints[None, :]
-            # e_c = -G_A[None, :, :]
+            # # G_A = G_A * action_scale[None, :]
+            # e_c = G_A[None, :, :]
             # e_c = jnp.pad(e_c, ((0, 0), (0, 0), (0, self.action_dim - e_c.shape[-1]))) 
-            ###########################################
+            ################################################################################################
 
-            # e = e_RTC + lambda_c*e_c
-            e = e_RTC 
+            lambda_c = 1.0 
+            rtc_scale = 1.0
+            pinv_correction_scale = 1.0
+            # e = rtc_scale * e_RTC + lambda_c * e_c
+            e = e_RTC * rtc_scale
             
             r2 = (time**2) / ((1-time)**2 + time**2)
 
             pinv_correction = vjp_fun(e)[0]
+                                
             c = jnp.nan_to_num((time)/(1-time), posinf=5.0) ## A max weight tolerance, should be input
             guidance_weight = jnp.minimum(c / r2, 5.0) # Guidance weight with a max cap to prevent extreme values
+            v_corrected = v_t - guidance_weight * pinv_correction * pinv_correction_scale
 
-            rtc_scale = 1
-            v_corrected = v_t - guidance_weight * pinv_correction * rtc_scale 
-        
             x_next = x_t + dt * v_corrected
-            # hard_mask = (jnp.arange(H)[None, :, None] < d)
-            # x_next = jnp.where(hard_mask, A_prev, x_next)
             time += dt
 
             # values to record
@@ -1299,6 +1310,12 @@ class Pi05(_model.BaseModel):
                 v_t,
                 pinv_correction,
                 time,
+                e_RTC,
+                None,
+                None,
+                None
+                # constraint_aux["x_hat"],
+                # constraint_aux["E"],
             )
 
             return (x_next, time), record 
@@ -1306,16 +1323,33 @@ class Pi05(_model.BaseModel):
 
         init_carry = (noise, 1.0) 
         
-        (x_final, _), (x_hist, x1_hat_hist, x_next_hist, v_hist, g_hist, t_hist) = jax.lax.scan( 
-            f=step, 
+        # (x_final, _), (x_hist, x1_hat_hist, x_next_hist, v_hist, g_hist, t_hist) = jax.lax.scan( 
+        #     f=step, 
+        #     init=init_carry,
+        #     xs=None, 
+        #     length=num_steps
+        # )
+        (
+            x_final,
+            _,
+        ), (
+            x_hist,
+            x1_hat_hist,
+            x_next_hist,
+            v_hist,
+            g_hist,
+            t_hist,
+            e_RTC_hist,
+            e_c_hist,
+            x_hat_eef_hist,
+            constraint_error_hist,
+        ) = jax.lax.scan(
+            f=step,
             init=init_carry,
-            xs=None, 
-            length=num_steps
+            xs=None,
+            length=num_steps,
         )
-        # hard_mask = (jnp.arange(H)[None, :, None] < d)
 
-        # x_final = jnp.where(hard_mask, A_prev, x_final)
-        
         hist = {
             "x_final": x_final,          # final integrated returned sample
             "x_hist": x_hist,            # latent before update
@@ -1324,119 +1358,60 @@ class Pi05(_model.BaseModel):
             "v_hist": v_hist,
             "g_hist": g_hist,
             "t_hist": t_hist,
-            "A_prev": A_prev,
+            "A_prev_padded": A_prev,
             "W": W,
         }
 
 
         return x_final, hist
 
-    @override
-    def guided_inference_2(
-        self,
-        rng: at.KeyArrayLike,
-        observation: _model.Observation,
-        *,
-        A_prev: at.Float[at.Array, "b ah_prev ad"],  # should be A_cur[:, s:, :]
-        s: int | at.Int[at.Array, ""],
-        d: int | at.Int[at.Array, ""],
-        num_steps: int | at.Int[at.Array, ""] = 50,
-        noise: at.Float[at.Array, "b ah ad"] | None = None,
-        guidance_beta: float | at.Float[at.Array, ""] = 5.0,
-    ) -> _model.Actions:
-        guidance_weight = 15.0 # 15-20
+    def guided_inference_v2(
+            self, 
+            rng: at.KeyArrayLike, 
+            observation: _model.Observation,
+            *, 
+            num_steps: int | at.Int[at.Array, ""] = 10, 
+            noise: at.Float[at.Array, "b ah ad"] | None = None,
+            d: int | at.Int[at.Array, ""] = 4,
+            s: int | at.Int[at.Array, ""] = 5,
+            j: int | at.Int[at.Array, ""] = 0,
+            A_prev: at.Float[ArrayT, ""] | None = None,
+            lambda_c: float = 0.0
+    ): 
         observation = _model.preprocess_observation(None, observation, train=False)
 
         dt = -1.0 / num_steps
         batch_size = observation.state.shape[0]
-        H = self.action_horizon
 
-        if noise is None:
-            noise = jax.random.normal(
-                rng, (batch_size, self.action_horizon, self.action_dim)
-            ) * 1.0
+        if noise is None: 
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        
+        nq = 7 # Number of joints 
+        policy_dt = 1/15
+        constraint_gain = 1
+        max_guidance_norm = 5.0 
 
-        # ---------------------------------------------------------------------
-        # RTC target construction.
-        # A_prev may have fewer action dimensions than the policy output.
-        # We pad it to self.action_dim, but mask out the padded dimensions so
-        # they do not contribute to the guidance VJP.
-        # ---------------------------------------------------------------------
-        num_joints = 7
-        if A_prev is None:
-            guidance_weight = 0.0
-            A_prev = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
-        else:
-            A_prev = jnp.asarray(A_prev, dtype=noise.dtype)
+        # Constrain 
+        p_target = jnp.array([0.0, 0.0, 0.25]) # Desired position of the end-effector
+        p_weights = jnp.array([0.0, 0.0, 1.0]) # Weights for the positional constraint
 
-        target_action_dim = self.action_dim  # should be 32 in your setup
-        prev_action_dim = A_prev.shape[-1]
+        # Weighting through time
+        h_idx = jnp.arange(self.action_horizon, dtype=noise.dtype)
+        time_weights = 0.1 + jnp.exp(1.1*h_idx/float(self.action_horizon)) - 1.0
 
-        if prev_action_dim > target_action_dim:
-            raise ValueError(
-                f"A_prev has action_dim={prev_action_dim}, "
-                f"but policy action_dim={target_action_dim}."
-            )
-
-        if A_prev.shape[1] > H:
-            raise ValueError(
-                f"A_prev length {A_prev.shape[1]} is larger than horizon {H}."
-            )
-
-        # Pad action dimension: [..., prev_action_dim] -> [..., target_action_dim]
-        action_pad_len = target_action_dim - prev_action_dim
-        A_prev = jnp.pad(
-            A_prev,
-            pad_width=((0, 0), (0, 0), (0, action_pad_len)),
-            mode="constant",
+        action_scale_array = jnp.array(
+        [
+            0.1555912402862041,
+            0.3074590841735031,
+            0.1514089017296873,
+            0.30116801315764397,
+            0.22751769153326873,
+            0.24581617376611345,
+            0.26948180190273524,
+        ],
+        dtype=noise.dtype,
         )
 
-        # Mask valid action dimensions so padded dimensions are not guided.
-        # Shape: [1, 1, action_dim], broadcastable to [b, H, action_dim]
-        action_dim_mask = jnp.concatenate(
-            [
-                jnp.ones((num_joints,), dtype=noise.dtype),
-                jnp.zeros((action_pad_len+1,), dtype=noise.dtype), # +1 is HACK
-            ],
-            axis=0,
-        )[None, None, :]
-
-        # Pad horizon dimension: [b, H_prev, action_dim] -> [b, H, action_dim]
-        horizon_pad_len = H - A_prev.shape[1]
-        A_prev_padded = jnp.pad(
-            A_prev,
-            pad_width=((0, 0), (0, horizon_pad_len), (0, 0)),
-            mode="constant",
-        )
-
-        def make_rtc_soft_weights(H, s, d, dtype):
-            i = jnp.arange(H, dtype=dtype)
-
-            s_f = jnp.asarray(s, dtype=dtype)
-            d_f = jnp.asarray(d, dtype=dtype)
-            H_f = jnp.asarray(H, dtype=dtype)
-
-            denom = H_f - s_f - d_f + 1.0
-            denom = jnp.maximum(denom, 1.0)
-
-            c_i = (H_f - s_f - i) / denom
-
-            w_mid = jnp.expm1(c_i) / jnp.expm1(jnp.asarray(1.0, dtype=dtype))
-
-            w = jnp.where(
-                i < d_f,
-                1.0,
-                jnp.where(i < (H_f - s_f), w_mid, 0.0),
-            )
-
-            return jnp.clip(w, 0.0, 1.0)[None, :, None]
-
-        W = make_rtc_soft_weights(H, s=s, d=d, dtype=noise.dtype)
-        W = W * action_dim_mask  # Mask out padded action dimensions
-
-        # ---------------------------------------------------------------------
-        # Prefix KV cache is unchanged.
-        # ---------------------------------------------------------------------
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
@@ -1447,25 +1422,7 @@ class Pi05(_model.BaseModel):
             positions=positions,
         )
 
-        def velocity_and_clean_estimate(
-            x_t: at.Float[at.Array, "b ah ad"],
-            time: at.Float[at.Array, ""],
-        ):
-            """
-            Returns:
-                clean_estimate:
-                    Paper: A_hat_1 = A_tau + (1 - tau) * v_paper(A_tau, tau)
-
-                    Your code uses reversed time:
-                        time = 1 - tau
-                        v_code = -v_paper
-
-                    Therefore:
-                        A_hat_clean = x_t - time * v_code(x_t, time)
-
-                v_t:
-                    The original model velocity in your reversed-time convention.
-            """
+        def model_velocity(x_t, time):
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
                 observation,
                 x_t,
@@ -1491,120 +1448,96 @@ class Pi05(_model.BaseModel):
                 - 1
             )
 
-            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+            prefix_out, suffix_out = self.PaliGemma.llm(
                 [None, suffix_tokens],
                 mask=full_attn_mask,
                 positions=positions,
                 kv_cache=kv_cache,
                 adarms_cond=[None, adarms_cond],
-            )
+            )[0]
 
             assert prefix_out is None
 
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon:])
+            return self.action_out_proj(suffix_out[:, -self.action_horizon:])
+        
+        def clip_guidance(g, max_norm):
+            flat = g.reshape((g.shape[0], -1))
+            norm = jnp.linalg.norm(flat, axis=-1)
+            scale = jnp.minimum(1.0, max_norm / (norm + 1e-6))
+            return g * scale[:, None, None]
 
-            # Reversed-time equivalent of Eq. 3.
-            clean_estimate = x_t - time * v_t
-
-            return clean_estimate, v_t
-
-        def guidance_scale_reversed_time(
-            time: at.Float[at.Array, ""],
-            beta: float | at.Float[at.Array, ""],
-            dtype,
-        ) -> at.Float[at.Array, ""]:
+        def position_constraint_cotangent(x_clean):
             """
-            Paper:
-                scale = min(beta, (1 - tau) / (tau * r_tau^2))
-                r_tau^2 = (1 - tau)^2 / (tau^2 + (1 - tau)^2)
+            x_clean: normalized clean action estimate, shape [B, H, action_dim]
 
-            With reversed code time:
-                time = 1 - tau
-
-            Therefore:
-                r^2 = time^2 / ((1 - time)^2 + time^2)
-                scale = min(beta, time / ((1 - time) * r^2))
+            Returns:
+                e_A: cotangent wrt normalized clean action, shape [B, H, action_dim]
             """
-            eps = jnp.asarray(1e-6, dtype=dtype)
+            a_phys = self.un_normalizer(x_clean)[..., :nq]  # [B, H, 7]
+            q_obs = observation.state[:, :nq]  # [B, 7]
+            q_hat = q_obs[:, None, :] + policy_dt * jnp.cumsum(a_phys, axis=1)
+            
+            x_hat = jax.vmap(jax.vmap(panda_fg_jax))(q_hat)
+            p_hat = x_hat[..., :3]  # [B, H, 3]
 
-            time = jnp.asarray(time, dtype=dtype)
-            tau_paper = 1.0 - time
+            p_star = jnp.broadcast_to(
+                p_target[None, None, :],
+                p_hat.shape,
+            )
 
-            r2 = (time**2) / (tau_paper**2 + time**2 + eps)
+            E = p_star - p_hat  # [B, H, 3]
 
-            raw_scale = time / jnp.maximum(tau_paper * r2, eps)
+            G_E = (
+                (time_weights[None, :, None] ** 2)
+                * E
+                * (p_weights[None, None, :] ** 2)
+            )
 
-            return jnp.minimum(jnp.asarray(beta, dtype=dtype), raw_scale)
+            J_full = jax.vmap(jax.vmap(get_jacobian))(q_hat)    # [B, H, 6, 7]
+            J_pos = J_full[..., :3, :]                          # [B, H, 3, 7]
+            e_q = jnp.einsum("bhc,bhcq->bhq", G_E, J_pos)       # [B, H, 7]
 
+            e_A_phys = policy_dt * reverse_cumsum(e_q, axis=1)  # [B, H, 7]
+
+            e_A_norm_7 = e_A_phys * action_scale_array[None, None, :]  # [B, H, 7]
+
+            e_A = jnp.pad(
+                e_A_norm_7,
+                ((0, 0), (0, 0), (0, self.action_dim - nq)),
+            )
+
+            return e_A
+    
         def step(carry, _):
             x_t, time = carry
 
-            # Use one primal forward pass and one reverse pass to get the VJP.
-            # The second output v_t receives zero cotangent; it is returned only so
-            # we can reuse the model velocity for the integration update.
-            (clean_estimate, v_t), vjp_fn = jax.vjp(
-                lambda x: velocity_and_clean_estimate(x, time),
-                x_t,
-            )
+            def clean_and_velocity(x_in):
+                v = model_velocity(x_in, time)
+                x_clean = x_in - time * v
+                return x_clean, v
 
-            # e = (A_prev - A_hat_clean)^T diag(W)
-            # Shape: [b, H, action_dim]
-            weighted_error = (A_prev_padded - clean_estimate) * W
-            weighted_error = jax.lax.stop_gradient(weighted_error)
+            (x_clean, v_t), vjp_clean = jax.vjp(clean_and_velocity, x_t) 
+            e_A = position_constraint_cotangent(x_clean)
 
-            # g = e * d A_hat_clean / d x_t
-            # JAX returns J^T @ weighted_error, same shape as x_t.
-            g_t, = vjp_fn(
-                (
-                    weighted_error,
-                    jnp.zeros_like(v_t),
-                )
-            )
+            e_A = jax.lax.stop_gradient(e_A)
 
-            scale = guidance_scale_reversed_time(
-                time,
-                guidance_beta,
-                dtype=x_t.dtype,
-            )
+            g_c = vjp_clean((e_A, jnp.zeros_like(v_t)))[0]
 
-            # Important sign flip:
-            # Paper integrates tau:       x <- x + (+dt) * (v_paper + scale * g)
-            # This code integrates time:  x <- x + (-dt) * v_code
-            # Since v_code = -v_paper, the guidance must be SUBTRACTED from v_code.
-            velocity_guidance = -scale * g_t * guidance_weight
-            v_guided = v_t + velocity_guidance
+            # Safety clipping
+            g_c = clip_guidance(g_c, max_guidance_norm)
+
+            v_guided = v_t - constraint_gain * g_c
 
             x_next = x_t + dt * v_guided
             t_next = time + dt
 
-            record = (
-                x_t,
-                v_guided,
-                v_t,
-                velocity_guidance,
-                g_t,
-                scale,
-                time,
-                clean_estimate,
-            )
+            record = (x_t, x_clean, x_next, A_prev, v_t, g_c, time)
 
             return (x_next, t_next), record
+    
+        init_carry = (noise, jnp.array(1.0, dtype=noise.dtype))
 
-        init_carry = (noise, 1.0)
-
-        (
-            x_final,
-            _,
-        ), (
-            x_hist,
-            v_guided_hist,
-            v_base_hist,
-            velocity_guidance_hist,
-            g_hist,
-            guidance_scale_hist,
-            t_hist,
-            clean_estimate_hist,
-        ) = jax.lax.scan(
+        (x_final, _), (x_hist, x_clean_hist, x_next_hist, A_prev_used, v_hist, g_hist, t_hist) = jax.lax.scan(
             step,
             init_carry,
             xs=None,
@@ -1613,21 +1546,19 @@ class Pi05(_model.BaseModel):
 
         hist = {
             "x_hist": x_hist,
+            "x_clean_hist": x_clean_hist,
+            "x_next_hist": x_next_hist,
+            "A_prev_padded": A_prev_used,
             "x_final": x_final,
-            "v_hist": v_guided_hist,
-            "v_base_hist": v_base_hist,
-            "velocity_guidance_hist": velocity_guidance_hist,
-            "g_hist": g_hist,
-            "guidance_scale_hist": guidance_scale_hist,
+            "v_hist": v_hist,
+            "constraint_guidance_hist": g_hist,
             "t_hist": t_hist,
-            "clean_estimate_hist": clean_estimate_hist,
-            "rtc_weights": W,
-            "A_prev_padded": A_prev_padded,
-            "noise" : noise,
         }
 
         return x_final, hist
-        
+
+
+
     @at.typecheck
     def _generate_subtask(
         self, 
@@ -1684,7 +1615,6 @@ class Pi05(_model.BaseModel):
             mask=prefix_attn_mask,
             positions=prefix_positions,
         )
-        #kv_cache = jax.tree.map(lambda x: jnp.pad(x, ((0, 0), (0, 0), (0, 1), (0, 0), (0, 0))), kv_cache)
         last_idx = jnp.clip(prefix_len.astype(jnp.int32) - 1, 0)
         gather_idx = last_idx[:, None, None]
         last_embedding = jnp.take_along_axis(prefix_out, gather_idx, axis=1)

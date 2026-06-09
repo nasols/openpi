@@ -91,7 +91,8 @@ class Policy(BasePolicy):
 
         if self._guided_inference: 
             assert isinstance(self._model, Pi05), "Guided inference is currently only supported for Pi05 models."
-            self._sample_actions = nnx_utils.module_jit(model.guided_inference_2)
+            # self._sample_actions = nnx_utils.module_jit(model.guided_inference)
+            self._sample_actions = nnx_utils.module_jit(model.guided_inference_v2)
             self._rng = rng or jax.random.key(0)
         elif self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -141,6 +142,7 @@ class Policy(BasePolicy):
         else: 
             print("[DEBUG] Not running guided inference")
         observation = _model.Observation.from_dict(inputs)
+
         
         ### HIERARCHICAL PLANNING ###
         #############################
